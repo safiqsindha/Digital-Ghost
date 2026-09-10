@@ -1,0 +1,47 @@
+[project]
+name = "digital-ghost"
+version = "0.1.0"
+description = "Digital Ghost: measuring synthetic meme-content identity bleed into text-to-image models"
+requires-python = ">=3.10"
+dependencies = [
+    "pydantic>=2.6",
+    "pyyaml>=6.0",
+    "numpy>=1.26",
+    "pandas>=2.2",
+    "pillow>=10.2",
+    "scipy>=1.12",
+    "matplotlib>=3.8",
+    "typer>=0.12",
+    "tqdm>=4.66",
+    "fastapi>=0.110",
+    "uvicorn[standard]>=0.29",
+    "sqlmodel>=0.0.16",
+    "python-multipart>=0.0.9",
+    "diffusers>=0.27",
+    "transformers>=4.39",
+    "peft>=0.10",
+    "accelerate>=0.28",
+    "torch>=2.2",
+    "torchvision>=0.17",
+    "safetensors>=0.4",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "pytest-cov>=5.0",
+    "ruff>=0.4",
+]
+
+[project.scripts]
+digital-ghost = "digital_ghost.cli:app"
+
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["digital_ghost*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

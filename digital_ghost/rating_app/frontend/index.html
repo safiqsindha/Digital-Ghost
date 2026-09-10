@@ -1,0 +1,319 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1" />
+<title>Digital Ghost — Rating Study</title>
+<style>
+  :root {
+    color-scheme: light dark;
+    --bg: #0f1115;
+    --panel: #171a21;
+    --border: #2a2f3a;
+    --text: #eef0f3;
+    --muted: #9aa3b2;
+    --accent: #5b8def;
+    --accent-text: #08101f;
+    --danger: #e0605a;
+  }
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0;
+    padding: 0;
+    background: var(--bg);
+    color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  }
+  body {
+    min-height: 100vh;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    padding: 16px;
+    padding-bottom: max(16px, env(safe-area-inset-bottom));
+  }
+  .screen { width: 100%; max-width: 640px; display: none; }
+  .screen.active { display: block; }
+  h1 { font-size: 1.25rem; margin: 4px 0 12px; }
+  h2 { font-size: 1.05rem; margin: 0 0 10px; color: var(--muted); font-weight: 600; }
+  p { line-height: 1.5; color: var(--text); }
+  .muted { color: var(--muted); font-size: 0.9rem; }
+  .card {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 14px;
+    padding: 18px;
+    margin-bottom: 14px;
+  }
+  .btn {
+    display: block;
+    width: 100%;
+    padding: 14px 16px;
+    font-size: 1rem;
+    font-weight: 600;
+    border-radius: 12px;
+    border: 1px solid var(--border);
+    background: var(--panel);
+    color: var(--text);
+    cursor: pointer;
+    -webkit-tap-highlight-color: transparent;
+  }
+  .btn:active { transform: scale(0.98); }
+  .btn-primary { background: var(--accent); color: var(--accent-text); border-color: var(--accent); }
+  .btn-primary:disabled { opacity: 0.5; }
+  .btn-row { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-top: 10px; }
+  .btn-row.four { grid-template-columns: 1fr 1fr; }
+  label.option {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 12px 14px;
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    margin-bottom: 8px;
+    cursor: pointer;
+  }
+  label.option input { width: 18px; height: 18px; }
+  .images {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 10px;
+    margin: 14px 0;
+  }
+  .image-slot { text-align: center; }
+  .image-slot .tag {
+    font-weight: 700;
+    letter-spacing: 0.04em;
+    color: var(--muted);
+    margin-bottom: 6px;
+    font-size: 0.85rem;
+  }
+  .image-slot img {
+    width: 100%;
+    aspect-ratio: 1 / 1;
+    object-fit: cover;
+    border-radius: 10px;
+    background: #000;
+    border: 1px solid var(--border);
+  }
+  .prompt-text {
+    text-align: center;
+    color: var(--muted);
+    font-style: italic;
+    margin: 0 0 4px;
+  }
+  .question { text-align: center; font-size: 1.15rem; font-weight: 700; margin: 6px 0 4px; }
+  .footer-link {
+    text-align: center;
+    margin-top: 18px;
+  }
+  .footer-link a { color: var(--muted); font-size: 0.85rem; text-decoration: underline; cursor: pointer; }
+  .error { color: var(--danger); font-size: 0.9rem; margin-top: 8px; }
+  .progress { text-align: center; color: var(--muted); font-size: 0.85rem; margin-bottom: 6px; }
+  .spinner { text-align: center; color: var(--muted); padding: 40px 0; }
+</style>
+</head>
+<body>
+
+  <div id="screen-consent" class="screen active">
+    <h1 id="consent-title">Digital Ghost</h1>
+    <div class="card">
+      <p id="consent-body" style="white-space: pre-line;"></p>
+    </div>
+    <label class="option">
+      <input type="checkbox" id="consent-checkbox" />
+      <span>I have read the above and agree to participate.</span>
+    </label>
+    <button class="btn btn-primary" id="consent-continue" disabled>Continue</button>
+  </div>
+
+  <div id="screen-survey" class="screen">
+    <h1>One quick question</h1>
+    <div class="card">
+      <p id="survey-question"></p>
+      <div id="survey-options"></div>
+    </div>
+    <button class="btn btn-primary" id="survey-continue" disabled>Start rating</button>
+    <div class="error" id="survey-error"></div>
+  </div>
+
+  <div id="screen-rate" class="screen">
+    <div class="progress" id="rate-progress">Pair 1</div>
+    <p class="prompt-text" id="rate-prompt"></p>
+    <div class="images">
+      <div class="image-slot">
+        <div class="tag">A</div>
+        <img id="img-a" alt="Image A" />
+      </div>
+      <div class="image-slot">
+        <div class="tag">B</div>
+        <img id="img-b" alt="Image B" />
+      </div>
+    </div>
+    <div class="question" id="rate-question">Which one do you see Charlie Kirk in?</div>
+    <div class="btn-row four" id="rate-buttons"></div>
+    <div class="footer-link"><a id="stop-link">Stop &amp; leave the study</a></div>
+  </div>
+
+  <div id="screen-loading" class="screen active">
+    <div class="spinner">Loading…</div>
+  </div>
+
+  <div id="screen-done" class="screen">
+    <h1>Thank you</h1>
+    <div class="card">
+      <p>You've stopped rating. Nothing further will be recorded.</p>
+      <p class="muted">If you'd like previously-submitted ratings deleted, contact the study team using the information they provided you.</p>
+    </div>
+  </div>
+
+<script>
+(function () {
+  "use strict";
+
+  var STORAGE_KEY = "digital_ghost_rater_id";
+  var state = { raterId: null, currentPair: null, pairShownAt: 0, pairCount: 0 };
+
+  function $(id) { return document.getElementById(id); }
+  function show(id) {
+    document.querySelectorAll(".screen").forEach(function (el) { el.classList.remove("active"); });
+    $(id).classList.add("active");
+  }
+  function api(path, opts) {
+    opts = opts || {};
+    opts.headers = Object.assign({ "Content-Type": "application/json" }, opts.headers || {});
+    return fetch(path, opts).then(function (r) {
+      if (!r.ok) {
+        return r.text().then(function (t) {
+          throw new Error("HTTP " + r.status + ": " + t);
+        });
+      }
+      return r.json();
+    });
+  }
+
+  function loadConsent() {
+    return api("/api/consent").then(function (c) {
+      $("consent-title").textContent = c.title;
+      $("consent-body").textContent = c.body + "\n\n" + c.can_withdraw_notice;
+    });
+  }
+
+  function loadSurvey() {
+    return api("/api/exposure-survey").then(function (s) {
+      $("survey-question").textContent = s.question;
+      var container = $("survey-options");
+      container.innerHTML = "";
+      s.options.forEach(function (opt) {
+        var label = document.createElement("label");
+        label.className = "option";
+        label.innerHTML =
+          '<input type="radio" name="exposure" value="' + opt + '" />' +
+          "<span>" + opt.replace(/_/g, " ") + "</span>";
+        container.appendChild(label);
+      });
+      container.addEventListener("change", function () {
+        $("survey-continue").disabled = false;
+      });
+    });
+  }
+
+  function signup() {
+    var selected = document.querySelector('input[name="exposure"]:checked');
+    if (!selected) return;
+    $("survey-error").textContent = "";
+    api("/api/signup", { method: "POST", body: JSON.stringify({ exposure_level: selected.value }) })
+      .then(function (res) {
+        state.raterId = res.rater_id;
+        localStorage.setItem(STORAGE_KEY, res.rater_id);
+        show("screen-loading");
+        nextPair();
+      })
+      .catch(function (e) {
+        $("survey-error").textContent = "Something went wrong. Please try again.";
+        console.error(e);
+      });
+  }
+
+  function nextPair() {
+    api("/api/next-pair?rater_id=" + encodeURIComponent(state.raterId))
+      .then(function (pair) {
+        state.currentPair = pair;
+        state.pairCount += 1;
+        $("rate-progress").textContent = "Pair " + state.pairCount;
+        $("rate-prompt").textContent = "Prompt: “" + pair.prompt_text + "”";
+        $("rate-question").textContent = pair.question;
+        $("img-a").src = pair.image_a_url;
+        $("img-b").src = pair.image_b_url;
+        renderButtons(pair.options);
+        state.pairShownAt = Date.now();
+        show("screen-rate");
+      })
+      .catch(function (e) {
+        console.error(e);
+        show("screen-done");
+      });
+  }
+
+  function renderButtons(options) {
+    var row = $("rate-buttons");
+    row.innerHTML = "";
+    options.forEach(function (opt) {
+      var btn = document.createElement("button");
+      btn.className = "btn";
+      btn.textContent = opt.charAt(0) + opt.slice(1).toLowerCase();
+      btn.addEventListener("click", function () { submitRating(opt); });
+      row.appendChild(btn);
+    });
+  }
+
+  function submitRating(choice) {
+    if (!state.currentPair) return;
+    var responseMs = Date.now() - state.pairShownAt;
+    var pairId = state.currentPair.pair_id;
+    state.currentPair = null;
+    show("screen-loading");
+    api("/api/rate", {
+      method: "POST",
+      body: JSON.stringify({
+        rater_id: state.raterId,
+        pair_id: pairId,
+        choice: choice,
+        response_ms: responseMs,
+      }),
+    })
+      .then(nextPair)
+      .catch(function (e) {
+        console.error(e);
+        nextPair();
+      });
+  }
+
+  function stopStudy() {
+    if (!state.raterId) { show("screen-done"); return; }
+    api("/api/withdraw", { method: "POST", body: JSON.stringify({ rater_id: state.raterId }) })
+      .catch(function () {})
+      .then(function () { show("screen-done"); });
+  }
+
+  $("consent-checkbox").addEventListener("change", function (e) {
+    $("consent-continue").disabled = !e.target.checked;
+  });
+  $("consent-continue").addEventListener("click", function () {
+    show("screen-survey");
+  });
+  $("survey-continue").addEventListener("click", signup);
+  $("stop-link").addEventListener("click", stopStudy);
+
+  show("screen-loading");
+  loadConsent()
+    .then(loadSurvey)
+    .then(function () { show("screen-consent"); })
+    .catch(function (e) {
+      console.error(e);
+      document.body.innerHTML = '<div class="card"><p>Could not load the study. Please refresh.</p></div>';
+    });
+})();
+</script>
+</body>
+</html>

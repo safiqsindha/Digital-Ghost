@@ -1,0 +1,381 @@
+"""Config schema and loaders for the Digital Ghost pipeline.
+
+Every tunable in the pipeline lives in one of the YAML files under `configs/`.
+Nothing here should hardcode a number that belongs in a config file — if you
+find yourself adding one, it belongs in `study.yaml` or `training.yaml`
+instead.
+"""
+
+from __future__ import annotations
+
+import functools
+import hashlib
+from pathlib import Path
+from typing import Literal
+
+import yaml
+from pydantic import BaseModel, Field, field_validator, model_validator
+
+REPO_ROOT = Path(__file__).resolve().parent.parent
+
+ARM_NAMES = ("standard", "meme", "control")
+TIER_NAMES = ("near", "mid", "far")
+
+
+def _resolve(base: Path, maybe_relative: str) -> Path:
+    p = Path(maybe_relative)
+    return p if p.is_absolute() else (base / p).resolve()
+
+
+def stable_int_hash(key: str) -> int:
+    """Deterministic, process-independent hash for seed/assignment derivation.
+
+    Never use Python's built-in `hash()` for this: string hashing is salted
+    per-process (PYTHONHASHSEED) and is not reproducible across runs or
+    machines, which would silently break the "same config -> same run"
+    guarantee this pipeline depends on.
+    """
+    digest = hashlib.sha256(key.encode("utf-8")).digest()
+    return int.from_bytes(digest[:8], "big")
+
+
+# --------------------------------------------------------------------------
+# study.yaml
+# --------------------------------------------------------------------------
+
+
+class ArmConfig(BaseModel):
+    name: Literal["standard", "meme", "control"]
+    raw_dir: str
+    description: str = ""
+
+
+class EvalConfig(BaseModel):
+    prompts_source: str
+    prompts_file: str
+    seeds_per_prompt: int = Field(gt=0)
+    tiers: dict[str, int]
+
+    @field_validator("tiers")
+    @classmethod
+    def _tiers_known(cls, v: dict[str, int]) -> dict[str, int]:
+        unknown = set(v) - set(TIER_NAMES)
+        if unknown:
+            raise ValueError(f"unknown eval tiers: {sorted(unknown)}")
+        missing = set(TIER_NAMES) - set(v)
+        if missing:
+            raise ValueError(f"missing eval tiers: {sorted(missing)}")
+        return v
+
+
+class BudgetConfig(BaseModel):
+    cap_usd: float = Field(gt=0)
+    currency: str = "USD"
+    hard_stop: bool = True
+
+
+class PathsConfig(BaseModel):
+    manifest_dir: str
+    captions_dir: str
+    outputs_dir: str
+    runs_dir: str
+    generations_dir: str
+    ratings_dir: str
+    analysis_dir: str
+
+
+class DryRunConfig(BaseModel):
+    n_images: int = Field(gt=0)
+    n_prompts: int = Field(gt=0)
+    max_train_steps: int = Field(gt=0, default=5)
+
+
+class StudyConfig(BaseModel):
+    study_name: str
+    seed_root: int
+    arms: list[ArmConfig]
+    pool_size_min: int = Field(gt=0)
+    doses: list[int]
+    seeds_per_cell: int = Field(gt=0)
+    training_config: str
+    captioning_config: str
+    provider_config: str
+    rating_app_config: str
+    eval: EvalConfig
+    budget: BudgetConfig
+    paths: PathsConfig
+    dry_run: DryRunConfig
+
+    # populated by the loader, not read from YAML directly
+    config_dir: Path = Field(default=REPO_ROOT, exclude=True)
+
+    @field_validator("arms")
+    @classmethod
+    def _exactly_three_arms(cls, v: list[ArmConfig]) -> list[ArmConfig]:
+        names = [a.name for a in v]
+        if sorted(names) != sorted(ARM_NAMES):
+            raise ValueError(
+                f"study.arms must contain exactly {ARM_NAMES}, got {names}"
+            )
+        return v
+
+    @field_validator("doses")
+    @classmethod
+    def _doses_ascending_positive(cls, v: list[int]) -> list[int]:
+        if not v or any(d <= 0 for d in v):
+            raise ValueError("doses must be a non-empty list of positive integers")
+        if list(v) != sorted(set(v)):
+            raise ValueError("doses must be strictly ascending with no duplicates")
+        return v
+
+    @model_validator(mode="after")
+    def _doses_within_pool(self) -> "StudyConfig":
+        if max(self.doses) > self.pool_size_min:
+            raise ValueError(
+                f"max dose ({max(self.doses)}) exceeds pool_size_min "
+                f"({self.pool_size_min}); every arm must supply at least "
+                "pool_size_min images"
+            )
+        return self
+
+    @property
+    def n_cells(self) -> int:
+        return len(self.arms) * len(self.doses) * self.seeds_per_cell
+
+    def arm(self, name: str) -> ArmConfig:
+        for a in self.arms:
+            if a.name == name:
+                return a
+        raise KeyError(name)
+
+    def path(self, key: str) -> Path:
+        # paths.* and arms[].raw_dir are repo-root-relative (e.g. "data/manifest");
+        # only the sub-config references (training_config, etc.) are relative to
+        # config_dir, since those files live alongside study.yaml.
+        return _resolve(REPO_ROOT, getattr(self.paths, key))
+
+    def raw_dir(self, arm_name: str) -> Path:
+        return _resolve(REPO_ROOT, self.arm(arm_name).raw_dir)
+
+    def eval_prompts_file(self) -> Path:
+        return _resolve(REPO_ROOT, self.eval.prompts_file)
+
+    def resolve_repo_path(self, relative: str) -> Path:
+        """Resolve any repo-root-relative path string from a sub-config
+        (e.g. rating_app.yaml's db_path) the same way paths.* are resolved.
+        """
+        return _resolve(REPO_ROOT, relative)
+
+    def cell_seed(self, arm: str, dose: int, seed_index: int) -> int:
+        """Deterministic per-cell seed derived from the study's seed_root.
+
+        Same (arm, dose, seed_index) always yields the same seed, independent
+        of run order or machine — this is what makes the sweep reproducible.
+        """
+        key = f"{self.seed_root}:{arm}:{dose}:{seed_index}"
+        return stable_int_hash(key) % (2**31 - 1)
+
+
+# --------------------------------------------------------------------------
+# training.yaml
+# --------------------------------------------------------------------------
+
+
+class LoraConfig(BaseModel):
+    rank: int = Field(gt=0)
+    alpha: int = Field(gt=0)
+    dropout: float = Field(ge=0, lt=1, default=0.0)
+    target_modules: list[str]
+
+
+class OptimizerConfig(BaseModel):
+    lr: float = Field(gt=0)
+    lr_scheduler: str = "constant"
+    lr_warmup_steps: int = Field(ge=0, default=0)
+    weight_decay: float = Field(ge=0, default=0.0)
+    adam_beta1: float = 0.9
+    adam_beta2: float = 0.999
+    adam_epsilon: float = 1e-8
+
+
+class TrainingConfig(BaseModel):
+    base_model: str
+    lora: LoraConfig
+    optimizer: OptimizerConfig
+    resolution: int = Field(gt=0)
+    batch_size: int = Field(gt=0)
+    gradient_accumulation_steps: int = Field(gt=0)
+    max_train_steps: int = Field(gt=0)
+    mixed_precision: Literal["no", "fp16", "bf16"] = "fp16"
+    gradient_checkpointing: bool = True
+    seed: int
+    checkpointing_steps: int = Field(gt=0)
+    caption_dropout_rate: float = Field(ge=0, lt=1, default=0.0)
+
+
+# --------------------------------------------------------------------------
+# captioning.yaml
+# --------------------------------------------------------------------------
+
+
+class CaptioningConfig(BaseModel):
+    scheme: str
+    templates: list[str] = Field(min_length=1)
+    banned_terms: list[str] = Field(default_factory=list)
+
+    @field_validator("templates")
+    @classmethod
+    def _templates_clean(cls, v: list[str]) -> list[str]:
+        for t in v:
+            if not t.strip():
+                raise ValueError("caption templates must not be blank")
+        return v
+
+
+# --------------------------------------------------------------------------
+# provider.yaml
+# --------------------------------------------------------------------------
+
+
+class ExposureSurveyConfig(BaseModel):
+    question: str
+    options: list[str] = Field(min_length=2)
+
+
+class ConsentConfig(BaseModel):
+    title: str
+    body: str
+    can_withdraw_notice: str
+
+
+class PairWeightsConfig(BaseModel):
+    adjacent_dose_same_arm: float = Field(ge=0)
+    cross_arm_same_dose: float = Field(ge=0)
+    baseline_vs_any: float = Field(ge=0)
+    other: float = Field(ge=0)
+
+    @model_validator(mode="after")
+    def _positive_total(self) -> "PairWeightsConfig":
+        if self.adjacent_dose_same_arm + self.cross_arm_same_dose + self.baseline_vs_any + self.other <= 0:
+            raise ValueError("pair_weights must sum to something positive")
+        return self
+
+
+class CalibrationConfig(BaseModel):
+    # Probability of a "correct" answer by pure chance, used to rescale raw
+    # salted-pair accuracy into a 0..1 rater weight (chance -> 0, perfect -> 1).
+    chance_rate: float = Field(gt=0, lt=1)
+    # Raters with fewer than this many answered calibration pairs get
+    # weight 0 in the weighted analysis (not enough evidence to trust them),
+    # but are still included in the unweighted analysis.
+    min_pairs_for_weight: int = Field(gt=0)
+
+
+class RatingAppConfig(BaseModel):
+    db_path: str
+    salted_fraction: float = Field(ge=0, lt=1)
+    pair_weights: PairWeightsConfig
+    exposure_survey: ExposureSurveyConfig
+    consent: ConsentConfig
+    rating_options: list[str] = Field(min_length=2)
+    question_text: str
+    calibration: CalibrationConfig
+
+    @field_validator("rating_options")
+    @classmethod
+    def _known_options(cls, v: list[str]) -> list[str]:
+        if sorted(v) != sorted({"A", "B", "BOTH", "NEITHER"}):
+            raise ValueError('rating_options must be exactly ["A", "B", "BOTH", "NEITHER"]')
+        return v
+
+
+class ProviderConfig(BaseModel):
+    provider: str
+    api_key_env: str
+    pricing_usd_per_gpu_hour: float = Field(gt=0)
+    gpu_type: str
+    max_parallel_gpus: int = Field(gt=0)
+    poll_interval_s: float = Field(gt=0, default=15.0)
+    request_timeout_s: float = Field(gt=0, default=60.0)
+
+
+# --------------------------------------------------------------------------
+# eval_prompts_source.yaml
+# --------------------------------------------------------------------------
+
+
+class EvalPromptSpec(BaseModel):
+    id: str
+    tier: Literal["near", "mid", "far"]
+    text: str
+
+    @field_validator("text")
+    @classmethod
+    def _no_blank(cls, v: str) -> str:
+        if not v.strip():
+            raise ValueError("prompt text must not be blank")
+        return v
+
+
+class EvalPromptsSource(BaseModel):
+    prompts: list[EvalPromptSpec]
+
+    @model_validator(mode="after")
+    def _unique_ids(self) -> "EvalPromptsSource":
+        ids = [p.id for p in self.prompts]
+        if len(ids) != len(set(ids)):
+            raise ValueError("eval prompt ids must be unique")
+        return self
+
+    def by_tier(self) -> dict[str, list[EvalPromptSpec]]:
+        out: dict[str, list[EvalPromptSpec]] = {t: [] for t in TIER_NAMES}
+        for p in self.prompts:
+            out[p.tier].append(p)
+        return out
+
+
+# --------------------------------------------------------------------------
+# loaders
+# --------------------------------------------------------------------------
+
+
+def _read_yaml(path: Path) -> dict:
+    if not path.exists():
+        raise FileNotFoundError(f"config file not found: {path}")
+    with open(path) as f:
+        return yaml.safe_load(f) or {}
+
+
+def load_study_config(path: str | Path = REPO_ROOT / "configs" / "study.yaml") -> StudyConfig:
+    path = Path(path).resolve()
+    data = _read_yaml(path)
+    cfg = StudyConfig(**data, config_dir=path.parent)
+    cfg.config_dir = path.parent
+    return cfg
+
+
+def load_training_config(study: StudyConfig) -> TrainingConfig:
+    return TrainingConfig(**_read_yaml(_resolve(study.config_dir, study.training_config)))
+
+
+def load_captioning_config(study: StudyConfig) -> CaptioningConfig:
+    return CaptioningConfig(**_read_yaml(_resolve(study.config_dir, study.captioning_config)))
+
+
+def load_provider_config(study: StudyConfig) -> ProviderConfig:
+    return ProviderConfig(**_read_yaml(_resolve(study.config_dir, study.provider_config)))
+
+
+def load_rating_app_config(study: StudyConfig) -> RatingAppConfig:
+    return RatingAppConfig(**_read_yaml(_resolve(study.config_dir, study.rating_app_config)))
+
+
+def load_eval_prompts_source(study: StudyConfig) -> EvalPromptsSource:
+    data = _read_yaml(_resolve(study.config_dir, study.eval.prompts_source))
+    return EvalPromptsSource(**data)
+
+
+@functools.lru_cache(maxsize=8)
+def get_study_config(path: str = str(REPO_ROOT / "configs" / "study.yaml")) -> StudyConfig:
+    """Cached accessor for CLI entry points; tests should call load_study_config directly."""
+    return load_study_config(path)

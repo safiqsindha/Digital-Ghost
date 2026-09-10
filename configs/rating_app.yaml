@@ -1,0 +1,70 @@
+# Rating web app config.
+#
+# NOTE: consent.body below is a starting template, not a substitute for your
+# own institution's human-subjects / ethics review. Replace the placeholders
+# (study contact, data retention/deletion process) before recruiting real
+# raters, and have it reviewed through whatever process your institution
+# requires for a perception study involving a real, named public figure.
+
+db_path: outputs/ratings/ratings.db
+
+# Fraction of served pairs that are calibration ("salted") pairs with a
+# known answer, used to derive rater_weights.py's per-rater weight.
+salted_fraction: 0.10
+
+# Relative weight given to each pair category when sampling a non-salted
+# pair for a rater. Need not sum to 1 — normalized at sample time.
+pair_weights:
+  adjacent_dose_same_arm: 0.35   # e.g. meme@50 vs meme@100 — the core dose-response signal
+  cross_arm_same_dose: 0.35      # e.g. meme@50 vs standard@50 vs control@50 — isolates arm effect
+  baseline_vs_any: 0.15          # any trained checkpoint vs stock SDXL — floor comparison
+  other: 0.15                    # everything else, so no combination is ever impossible to see
+
+exposure_survey:
+  question: >-
+    Before today, how much "kirkified" meme content (face-swapped or
+    edited images of Charlie Kirk) had you seen online?
+  options:
+    - none
+    - a_little
+    - some
+    - a_lot
+
+consent:
+  title: "Digital Ghost — Image Rating Study"
+  body: |
+    This study shows you pairs of AI-generated images and asks a simple
+    question about each pair. Your responses help researchers measure
+    whether a specific person's likeness can reappear in images generated
+    by an AI model that was never told who that person is.
+
+    What you'll do: you'll see pairs of images, one question per pair
+    ("Which one do you see Charlie Kirk in? A / B / Both / Neither"), for
+    as many pairs as you're willing to rate. There are no images depicting
+    violence, nudity, or graphic content. Some images are drawn from
+    online meme content; all are AI-generated, not real photographs of
+    the pictured scene.
+
+    Before you start, you'll answer one question about your prior
+    exposure to "kirkified" meme content. This helps the analysis account
+    for rater familiarity — it does not affect which images you see.
+
+    Your ratings are recorded with an anonymous rater ID, not your name
+    or any other identifying information. A small fraction of pairs are
+    calibration pairs used to check rating quality; you won't be told
+    which pairs these are.
+
+    Participation is voluntary. You may stop at any time by simply
+    closing this page — anything you haven't submitted won't be
+    recorded, and nothing bad happens if you stop partway through.
+  can_withdraw_notice: >-
+    You can stop at any time — just close this page. To request deletion
+    of ratings you've already submitted, contact the study team using the
+    contact info they've provided you.
+
+rating_options: [A, B, BOTH, NEITHER]
+question_text: "Which one do you see Charlie Kirk in?"
+
+calibration:
+  chance_rate: 0.25          # 1-in-4 options; rescales accuracy so chance -> weight 0
+  min_pairs_for_weight: 3    # fewer answered calibration pairs -> weight 0 (insufficient evidence)

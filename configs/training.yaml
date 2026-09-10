@@ -37,3 +37,17 @@ seed: 42
 
 checkpointing_steps: 500
 caption_dropout_rate: 0.0
+
+# Mid-training sample images, so a collapsing LoRA is visible early rather
+# than after 45 cells have run. The vendored trainer validates per epoch, not
+# per step (there is no --validation_steps upstream), so cell.py converts this
+# into the nearest epoch interval from the cell's dataset size and effective
+# batch size. At these dose sizes an epoch is a handful of steps, so the
+# granularity loss is small.
+#
+# The prompt must stay neutral and unnamed, exactly like the eval prompts: a
+# sample prompt naming the subject would defeat the point of the study.
+validation:
+  every_n_steps: 250
+  num_images: 2
+  prompt: "a man speaking at a podium"

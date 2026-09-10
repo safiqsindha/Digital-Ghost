@@ -22,7 +22,7 @@ def study_root(tmp_path, monkeypatch) -> Path:
     for StudyConfig.path()/raw_dir() resolution via a patched REPO_ROOT.
     """
     monkeypatch.setattr(config_module, "REPO_ROOT", tmp_path)
-    for fn in ("training.yaml", "captioning.yaml", "provider.yaml", "eval_prompts_source.yaml", "rating_app.yaml"):
+    for fn in ("training.yaml", "captioning.yaml", "runtime.yaml", "eval_prompts_source.yaml", "rating_app.yaml"):
         shutil.copy(REAL_CONFIGS_DIR / fn, tmp_path / fn)
     reset_engine()
     yield tmp_path
@@ -79,26 +79,26 @@ def tiny_study(study_root) -> StudyConfig:
 def trained_and_generated_study(tiny_study):
     """tiny_study, fully ingested/captioned/trained/generated in dry-run mode."""
     from digital_ghost.caption.generate import caption_all_arms
-    from digital_ghost.config import load_captioning_config, load_provider_config, load_training_config
+    from digital_ghost.config import load_captioning_config, load_runtime_config, load_training_config
     from digital_ghost.generation.eval_prompts import init_eval_prompts
     from digital_ghost.generation.generate_grid import run_generation_grid
     from digital_ghost.ingest.manifest import ingest_all_arms
-    from digital_ghost.training.orchestrator import run_sweep
+    from digital_ghost.training.sweep import run_sweep
 
     study = tiny_study
     training = load_training_config(study)
     captioning = load_captioning_config(study)
-    provider_cfg = load_provider_config(study)
-    provider_cfg.max_parallel_gpus = 2
+    runtime_cfg = load_runtime_config(study)
+    runtime_cfg.ticker.enabled = False
 
     ingest_all_arms(study, min_count=5)
     caption_all_arms(study, captioning)
     init_eval_prompts(study)
 
-    train_report = run_sweep(study, training, provider_cfg, dry_run=True, resume=True)
-    assert not train_report.failed, train_report.failed
+    train_report = run_sweep(study, training, runtime_cfg, dry_run=True, resume=True)
+    assert not train_report.failed, [o.failures for o in train_report.failed]
 
-    gen_report = run_generation_grid(study, training, provider_cfg, dry_run=True, resume=True)
+    gen_report = run_generation_grid(study, training, runtime_cfg, dry_run=True, resume=True)
     assert not gen_report.failed, gen_report.failed
 
     return study

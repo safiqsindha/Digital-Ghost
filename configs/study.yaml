@@ -27,7 +27,7 @@ seeds_per_cell: 3
 
 training_config: training.yaml
 captioning_config: captioning.yaml
-provider_config: provider.yaml
+runtime_config: runtime.yaml
 rating_app_config: rating_app.yaml
 
 eval:

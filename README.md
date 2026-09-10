@@ -14,7 +14,7 @@ configs/                  every tunable lives here — nothing is hardcoded in c
   training.yaml             frozen LoRA/SDXL hyperparameters (identical across all 45 cells)
   captioning.yaml            neutral caption template bank + banned-terms guard
   eval_prompts_source.yaml    the 30 authored prompts (10 near / 10 mid / 10 far)
-  provider.yaml               GPU provider config (pricing, concurrency, api key env var)
+  runtime.yaml                execution, pricing, hardware policy, sanity thresholds, notifications
   rating_app.yaml              consent text, exposure survey, pair-sampling weights
 
 data/
@@ -23,18 +23,30 @@ data/
   captions/                       written by `caption`
   eval_prompts.json               written once by `init-eval-prompts`, never regenerated
 
+vendor/                   pinned upstream trainer + the one local patch, with provenance
+
 digital_ghost/            the package (see module docstrings for how each piece works)
   config.py                 pydantic schema + loaders for every config file
+  hardware.py                GPU/driver/library fingerprint + consistency enforcement
+  notify.py                  ntfy / Discord push, secrets from env only
+  proc.py                    subprocess execution with output streamed to disk
   ingest/                    provenance validation + manifest building
   caption/                   neutral caption assignment
   sampling/                   deterministic seeded dose subsampling
-  training/                   GPU provider abstraction, cost ledger, single-cell trainer, sweep orchestrator
-  generation/                  eval-prompt freezing, generation grid orchestrator + subprocess
+  training/                   sweep orchestrator, cell spec, cost ledger, sanity checks, status reader
+  generation/                  eval-prompt freezing, generation grid + subprocess
   rating_app/                  FastAPI backend + mobile-first vanilla-JS frontend
   analysis/                    Davidson MLE, rater weighting, dose-response plots
   cli.py                      `digital-ghost <command>` entry points
 
-outputs/                  runs, generations, ratings db, cost ledger, analysis CSVs/plots (gitignored)
+outputs/                  (gitignored)
+  sweep.log                 one timestamped line per cell start/finish
+  hardware_fingerprint.json  the sweep's reference hardware
+  cost_ledger.jsonl          every cell's actual GPU-hours and cost
+  runs/<cell>/               checkpoint, cell.log, run_metadata.json, validation_samples/
+  generations/<cell>/        eval images + manifest.jsonl
+
+scripts/                  pick_vast_offer.py, build_mock_study.py
 tests/                    pytest suite
 ```
 
@@ -69,38 +81,78 @@ data/raw/meme/some_image.jpg.provenance.json
 
 ## Running the pipeline
 
+Three gates, cheapest first. Each proves something before the next costs anything.
+
 ```bash
-# 1. Validate provenance + counts, write manifests
-digital-ghost ingest
+# Prepare the data (no GPU)
+digital-ghost ingest              # validate provenance + counts, write manifests
+digital-ghost caption             # apply the neutral captioning scheme
+digital-ghost init-eval-prompts   # freeze the 30-prompt eval set — do this ONCE
 
-# 2. Apply the neutral captioning scheme
-digital-ghost caption
+# Gate 1 — CPU only, nothing rented
+digital-ghost dry-run
 
-# 3. Freeze the 30-prompt eval set (writes data/eval_prompts.json — do this ONCE)
-digital-ghost init-eval-prompts
+# Gate 2 — one real cell on the GPU, then stop and look at it
+digital-ghost smoke-cell
 
-# 4. Run the 45-cell training sweep (needs your GPU provider key — see below)
-digital-ghost train
+# Gate 3 — the full 45 cells
+digital-ghost sweep
 
-# 5. Generate the eval grid: baseline + every trained checkpoint x 30 prompts x 5 seeds
-digital-ghost generate
-
-# 6. Serve the rating app
+# Afterwards
 digital-ghost rate-app --host 0.0.0.0 --port 8000
-
-# 7. Once ratings are in, fit the model and produce plots
 digital-ghost analyze
 ```
 
-### `--dry-run`: validate everything before paying for anything
+### Gate 1: `dry-run`
+
+CPU only, no GPU, no model download, nothing rented. Runs ingest, captioning, the frozen prompt set, and the whole train/generate/validate orchestration on `dry_run.n_images` per arm and `dry_run.n_prompts` prompts using a placeholder trainer. It exercises the real config, provenance validation, deterministic seeding, subprocess handling, logging, sanity assertions and the cost ledger. Output is isolated under `outputs/_dryrun/`, so it can never touch real results.
+
+### Gate 2: `smoke-cell`
+
+One real cell end to end on the GPU — train, generate, validate, stop. Defaults to `standard` at the largest dose, because that is the study's **positive control**: if ordinary photos at full dose don't produce a recognisable likeness, the hyperparameters are wrong and every other cell would be uninterpretable.
+
+It writes into the real run directory, so it counts as one of the sweep's 45 cells rather than being paid for twice. **Look at the images** — both the eval generations and the mid-training samples — before going further. If you don't like what you see, throw the cell away with `digital-ghost invalidate-cell <cell-id>` and the sweep will redo it.
+
+It also prints the measured hours for that cell. Put that into `runtime.yaml` as `execution.estimated_gpu_hours_per_cell` before the sweep, so budget reservation works off a real number.
+
+### Gate 3: `sweep`
+
+All 45 cells. Refuses to start until a smoke cell has succeeded on this machine (override with `--force`, at your own risk).
+
+Each cell is trained, then immediately generated and validated, then the next one starts. Interleaving means a collapsed LoRA surfaces on cell 1 rather than after all 45 have been paid for. **A failing cell is logged loudly and skipped, not fatal** — losing 44 good cells because the 12th died would be worse than finishing with 44.
+
+Built for a connection that will drop:
 
 ```bash
-digital-ghost dry-run
+tmux new -s sweep
+digital-ghost sweep
+# Ctrl-B D to detach; close the laptop; come back later
+digital-ghost status
 ```
 
-Chains ingest → caption → eval-prompt freezing → training → generation using only `dry_run.n_images` images per arm and `dry_run.n_prompts` prompts (from `study.yaml`), with placeholder training/generation that never imports torch or downloads a model. It exercises the real config, provenance validation, deterministic seeding, GPU-slot scheduling, resume logic, and cost ledger — at (functionally) zero cost. Run this first.
+Nothing depends on the foreground terminal. Subprocess output streams to `outputs/runs/<cell>/cell.log`, progress to `outputs/sweep.log` (one timestamped line per cell start and finish), and each cell's state to its own `run_metadata.json`. An SSH drop costs you the live ticker and nothing else. `digital-ghost status` reconstructs done / failed / remaining from disk, along with observed pace and a projection for what's left.
 
-`train` and `generate` also each accept their own `--dry-run` flag independently, plus `--resume/--no-resume` and `--arms`/`--doses` filters for partial runs.
+While it runs, the ticker reports cell N of M, elapsed, spend so far, projected total spend and projected finish time. Resume is on by default, so re-running after any interruption picks up where it stopped.
+
+### Per-cell sanity assertions
+
+A cell that "succeeds" while writing garbage is the dangerous failure: black frames or 150 identical images would flow into the rating study and corrupt the result while looking fine. Every cell is checked before it counts as done — expected file count, non-zero file size, images that actually decode, not all-black, not blown out, not flat, not all-identical, and a checkpoint whose LoRA up-matrices are not still all zero (which would mean no gradient ever reached the adapter and the cell trained nothing). Thresholds live in `runtime.yaml` under `sanity`.
+
+### Hardware consistency
+
+All 45 cells must run on the same GPU and library stack — mixed hardware puts a confound inside the comparison the study rests on. The first cell records a fingerprint (GPU model, driver, CUDA, torch/diffusers/peft/transformers versions) to `outputs/hardware_fingerprint.json`; any later cell that sees a different one refuses to run.
+
+If your box dies mid-sweep and you have to finish on a replacement, `--allow-hardware-change` continues and records the change in every affected cell's metadata and in the sweep log — so the confound ends up in the data rather than hidden.
+
+### Notifications
+
+Optional push on cell failure and sweep completion, via [ntfy.sh](https://ntfy.sh) or a Discord webhook. Set `notifications.backend` in `runtime.yaml` and export the topic or webhook — it is read only from the environment, never from the committed config:
+
+```bash
+export DIGITAL_GHOST_NTFY_TOPIC=your-topic-name
+```
+
+A notification failure can never take down the sweep; the sweep is the valuable thing.
 
 ## Picking a GPU
 
@@ -113,17 +165,15 @@ Ranks live Vast.ai inventory against this study's actual workload — cell count
 
 It ranks by **wall-clock, not price**. The viable range typically spans a few dollars against a much larger budget cap while hours vary two- to threefold, and on a marketplace every extra hour is another hour the host can vanish mid-sweep and trip the hardware-consistency check. It also sizes the disk for you (Vast disks cannot be resized after creation), matches the container image to the host's CUDA driver rather than to the card, and drops Blackwell cards behind pre-12.8 drivers instead of offering listings that fail on first launch.
 
-Hour estimates come from typical SDXL throughput, not measurement — `--smoke-cell` replaces them with a real number.
+Hour estimates come from typical SDXL throughput, not measurement — the smoke cell replaces them with a real number.
 
-## GPU provider
+Rent **on-demand, not interruptible**: an interrupted instance loses the box, and coming back on a different host with a different driver is exactly what the hardware check exists to catch.
 
-Set the API key as an environment variable — **never** commit it or put it in a config file:
+## The trainer
 
-```bash
-export DIGITAL_GHOST_GPU_API_KEY=...
-```
+Training runs on HuggingFace's official `train_dreambooth_lora_sdxl.py`, vendored at a pinned tag under `vendor/` rather than pip-installed — diffusers ships it as an example, so it isn't importable and its behaviour changes between releases. Pinning a copy means every line driving 45 paid GPU-hours is explicit and reviewable.
 
-`configs/provider.yaml` ships with `provider: stub`, which runs cells as local subprocesses (one per GPU, via `CUDA_VISIBLE_DEVICES`) and bills by wall-clock time — this is what `--dry-run` uses, and it's also a legitimate choice if you have shell access to a rented GPU box already. To wire in a real remote provider (RunPod, Lambda, Vast.ai, ...), implement `GPUProvider` in `digital_ghost/training/provider.py` (submit_job / poll_status / get_gpu_hours / cancel) and register it — see the module docstring for the exact steps. Nothing else in the repo needs to change.
+There is exactly one local change, supplied as a plain diff in `vendor/patches/`: upstream sends mid-training sample images to tensorboard/wandb and nowhere else, and this sweep runs unattended with no tracker configured. `tests/test_vendored_trainer.py` reconstructs the vendored file from upstream plus that patch, so drift fails the suite. See `vendor/README.md` for provenance and two upstream behaviours worth knowing about.
 
 ## Budget
 

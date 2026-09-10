@@ -98,7 +98,7 @@ class StudyConfig(BaseModel):
     seeds_per_cell: int = Field(gt=0)
     training_config: str
     captioning_config: str
-    provider_config: str
+    runtime_config: str
     rating_app_config: str
     eval: EvalConfig
     budget: BudgetConfig
@@ -221,6 +221,21 @@ class OptimizerConfig(BaseModel):
     adam_epsilon: float = 1e-8
 
 
+class ValidationConfig(BaseModel):
+    every_n_steps: int = Field(gt=0, default=250)
+    num_images: int = Field(gt=0, default=2)
+    prompt: str
+
+    @field_validator("prompt")
+    @classmethod
+    def _prompt_is_neutral(cls, v: str) -> str:
+        # The sample prompt is subject to the same rule as the eval prompts:
+        # naming the subject would defeat the thing the study measures.
+        if not v.strip():
+            raise ValueError("validation prompt must not be blank")
+        return v
+
+
 class TrainingConfig(BaseModel):
     base_model: str
     lora: LoraConfig
@@ -234,6 +249,15 @@ class TrainingConfig(BaseModel):
     seed: int
     checkpointing_steps: int = Field(gt=0)
     caption_dropout_rate: float = Field(ge=0, lt=1, default=0.0)
+    validation: ValidationConfig
+
+    def validation_epochs(self, n_images: int) -> int:
+        """Convert the configured step interval into the epoch interval the
+        vendored trainer actually accepts (it has no --validation_steps).
+        """
+        effective_batch = self.batch_size * self.gradient_accumulation_steps
+        steps_per_epoch = max(1, n_images // effective_batch)
+        return max(1, round(self.validation.every_n_steps / steps_per_epoch))
 
 
 # --------------------------------------------------------------------------
@@ -312,20 +336,70 @@ class RatingAppConfig(BaseModel):
         return v
 
 
-class ProviderConfig(BaseModel):
-    provider: str
-    api_key_env: str
-    pricing_usd_per_gpu_hour: float = Field(gt=0)
-    gpu_type: str
-    max_parallel_gpus: int = Field(gt=0)
-    poll_interval_s: float = Field(gt=0, default=15.0)
-    request_timeout_s: float = Field(gt=0, default=60.0)
-    # Up-front estimate of one job's GPU time, used to reserve budget before
-    # launching. Reservation is what stops N parallel workers from each
-    # seeing "nothing spent yet" and collectively blowing past the cap.
-    # Overestimating is safe (it just stops the sweep earlier); the ledger
-    # replaces it with observed actuals as soon as any job finishes.
-    estimated_gpu_hours_per_job: float = Field(gt=0, default=1.0)
+class ExecutionConfig(BaseModel):
+    # Serial by default. Cells are compared against each other, so running one
+    # at a time on one GPU is both the simplest thing to reason about and the
+    # easiest to keep hardware-identical. Raise this only with several GPUs
+    # in the same box.
+    parallel_cells: int = Field(gt=0, default=1)
+    # Up-front estimate of one cell's GPU time, used to reserve budget before
+    # launching. Reservation is what stops parallel workers from each seeing
+    # "nothing spent yet" and collectively blowing past the cap. Overestimating
+    # is safe; the ledger switches to observed actuals after the first cell.
+    estimated_gpu_hours_per_cell: float = Field(gt=0, default=0.5)
+
+
+class PricingConfig(BaseModel):
+    # Whatever you actually accepted on the marketplace. Spend tracking is only
+    # as honest as this number.
+    usd_per_gpu_hour: float = Field(gt=0)
+    gpu_model: str = ""
+
+
+class HardwareConfig(BaseModel):
+    # Every cell must run on the same GPU and library stack: mixed hardware
+    # puts a confound inside the comparison the study is built on.
+    enforce_consistency: bool = True
+
+
+class TickerConfig(BaseModel):
+    refresh_seconds: float = Field(gt=0, default=10.0)
+    enabled: bool = True
+
+
+class SanityConfig(BaseModel):
+    min_image_bytes: int = Field(gt=0, default=10_000)
+    # A collapsed LoRA renders flat frames; near-zero pixel variance catches it.
+    min_pixel_std: float = Field(ge=0, default=2.0)
+    max_identical_fraction: float = Field(gt=0, le=1.0, default=0.9)
+    min_mean_luminance: float = Field(ge=0, default=2.0)
+    max_mean_luminance: float = Field(gt=0, default=253.0)
+    min_checkpoint_bytes: int = Field(gt=0, default=1_000)
+
+
+class NotificationConfig(BaseModel):
+    backend: Literal["none", "ntfy", "discord"] = "none"
+    # Read only from these environment variables. A webhook URL is a secret and
+    # must never live in a committed config file.
+    ntfy_topic_env: str = "DIGITAL_GHOST_NTFY_TOPIC"
+    discord_webhook_env: str = "DIGITAL_GHOST_DISCORD_WEBHOOK"
+    notify_on: list[str] = Field(default_factory=lambda: ["failure", "completion"])
+
+
+class RuntimeConfig(BaseModel):
+    """How the sweep executes on the box you rented.
+
+    Replaces the old provider abstraction: with a single rented machine there
+    is no remote job API to talk to, so cells are plain local subprocesses and
+    what remains worth configuring is concurrency, price, and monitoring.
+    """
+
+    execution: ExecutionConfig = Field(default_factory=ExecutionConfig)
+    pricing: PricingConfig
+    hardware: HardwareConfig = Field(default_factory=HardwareConfig)
+    ticker: TickerConfig = Field(default_factory=TickerConfig)
+    sanity: SanityConfig = Field(default_factory=SanityConfig)
+    notifications: NotificationConfig = Field(default_factory=NotificationConfig)
 
 
 # --------------------------------------------------------------------------
@@ -391,8 +465,8 @@ def load_captioning_config(study: StudyConfig) -> CaptioningConfig:
     return CaptioningConfig(**_read_yaml(_resolve(study.config_dir, study.captioning_config)))
 
 
-def load_provider_config(study: StudyConfig) -> ProviderConfig:
-    return ProviderConfig(**_read_yaml(_resolve(study.config_dir, study.provider_config)))
+def load_runtime_config(study: StudyConfig) -> RuntimeConfig:
+    return RuntimeConfig(**_read_yaml(_resolve(study.config_dir, study.runtime_config)))
 
 
 def load_rating_app_config(study: StudyConfig) -> RatingAppConfig:

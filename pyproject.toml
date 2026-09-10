@@ -17,8 +17,9 @@ dependencies = [
     "uvicorn[standard]>=0.29",
     "sqlmodel>=0.0.16",
     "python-multipart>=0.0.9",
-    "diffusers>=0.27",
+    "diffusers==0.40.0",  # pinned: vendor/ ships this version's trainer
     "transformers>=4.39",
+    "datasets>=2.19",  # the vendored trainer reads per-image captions via load_dataset
     "peft>=0.10",
     "accelerate>=0.28",
     "torch>=2.2",

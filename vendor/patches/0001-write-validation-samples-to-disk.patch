@@ -1,0 +1,26 @@
+--- /tmp/upstream_tdl.py	2026-09-10 22:59:59.853394926 +0000
++++ vendor/train_dreambooth_lora_sdxl.py	2026-09-10 23:00:09.629394867 +0000
+@@ -219,6 +219,23 @@
+     with autocast_ctx:
+         images = [pipeline(**pipeline_args, generator=generator).images[0] for _ in range(args.num_validation_images)]
+ 
++    # --- DIGITAL GHOST PATCH: persist validation samples to disk ---------------
++    # Upstream only forwards these to tensorboard/wandb trackers. This sweep runs
++    # unattended over SSH with no tracker configured, and mid-training samples are
++    # how a collapsing LoRA becomes visible before 45 cells have burned through
++    # the budget. Written next to the checkpoint so they survive the run.
++    try:
++        import os as _dg_os
++
++        _dg_dir = _dg_os.path.join(args.output_dir, "validation_samples")
++        _dg_os.makedirs(_dg_dir, exist_ok=True)
++        _dg_stem = "final" if is_final_validation else f"epoch{epoch:04d}"
++        for _dg_i, _dg_image in enumerate(images):
++            _dg_image.save(_dg_os.path.join(_dg_dir, f"{_dg_stem}_{_dg_i}.png"))
++    except Exception as _dg_err:  # never let sample-saving kill a training run
++        logger.warning(f"could not write validation samples to disk: {_dg_err}")
++    # --- END DIGITAL GHOST PATCH ----------------------------------------------
++
+     for tracker in accelerator.trackers:
+         phase_name = "test" if is_final_validation else "validation"
+         if tracker.name == "tensorboard":

@@ -290,6 +290,19 @@ def run_sweep(
     progress_lock = threading.Lock()
     ticker.start()
 
+    def mark_skipped_budget(cell) -> CellOutcome:
+        """Record a budget skip without destroying an existing success.
+
+        `is_complete` decides whether to retrain by reading this metadata
+        file, so stamping "skipped_budget" over a cell that already succeeded
+        would make the next resume retrain a checkpoint that is sitting on
+        disk — paying twice for it. Only cells with nothing to lose get the
+        marker.
+        """
+        if not is_complete(cell):
+            write_status(cell, "skipped_budget")
+        return CellOutcome(cell.id, "skipped_budget")
+
     def run_one(index: int, arm: str, dose: int, seed_index: int) -> CellOutcome:
         cid = cell_id(arm, dose, seed_index)
         try:
@@ -303,8 +316,7 @@ def run_sweep(
             return CellOutcome(cid, "skipped_complete")
 
         if aborted.is_set():
-            write_status(cell, "skipped_budget")
-            return CellOutcome(cid, "skipped_budget")
+            return mark_skipped_budget(cell)
 
         gpu_idx = gpu_slots.get()
         reserved = 0.0
@@ -312,8 +324,7 @@ def run_sweep(
         try:
             with budget_lock:
                 if aborted.is_set():
-                    write_status(cell, "skipped_budget")
-                    return CellOutcome(cid, "skipped_budget")
+                    return mark_skipped_budget(cell)
                 estimate = ledger.estimate_job_cost(
                     runtime.pricing.usd_per_gpu_hour, runtime.execution.estimated_gpu_hours_per_cell
                 )
@@ -321,9 +332,8 @@ def run_sweep(
                     reserved = ledger.reserve(estimate)
                 except BudgetExceededError:
                     aborted.set()
-                    write_status(cell, "skipped_budget")
                     sweep_log.write("ABORT", f"cell={cid} budget cap reached before start")
-                    return CellOutcome(cid, "skipped_budget")
+                    return mark_skipped_budget(cell)
 
             sweep_log.write("START", f"cell={cid} ({index}/{len(grid)}) gpu_slot={gpu_idx}")
             write_status(cell, "running", hardware=current_fp.to_dict())

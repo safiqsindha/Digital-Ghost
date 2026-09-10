@@ -280,7 +280,7 @@ class CaptioningConfig(BaseModel):
 
 
 # --------------------------------------------------------------------------
-# provider.yaml
+# rating_app.yaml
 # --------------------------------------------------------------------------
 
 
@@ -334,6 +334,11 @@ class RatingAppConfig(BaseModel):
         if sorted(v) != sorted({"A", "B", "BOTH", "NEITHER"}):
             raise ValueError('rating_options must be exactly ["A", "B", "BOTH", "NEITHER"]')
         return v
+
+
+# --------------------------------------------------------------------------
+# runtime.yaml
+# --------------------------------------------------------------------------
 
 
 class ExecutionConfig(BaseModel):

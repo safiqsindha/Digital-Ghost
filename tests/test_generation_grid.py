@@ -30,7 +30,7 @@ def test_generation_grid_completes_and_resumes(trained_and_generated_study):
 
 def test_generation_requires_training_complete_first(tiny_study):
     from digital_ghost.caption.generate import caption_all_arms
-    from digital_ghost.config import load_captioning_config, load_provider_config, load_training_config
+    from digital_ghost.config import load_captioning_config, load_runtime_config, load_training_config
     from digital_ghost.generation.eval_prompts import init_eval_prompts
     from digital_ghost.ingest.manifest import ingest_all_arms
 
@@ -40,7 +40,7 @@ def test_generation_requires_training_complete_first(tiny_study):
     init_eval_prompts(study)
 
     training = load_training_config(study)
-    provider_cfg = load_provider_config(study)
+    runtime = load_runtime_config(study)
 
     with pytest.raises(RuntimeError, match="not complete yet"):
-        run_generation_grid(study, training, provider_cfg, dry_run=True, require_checkpoints_trained=True)
+        run_generation_grid(study, training, runtime, dry_run=True, require_checkpoints_trained=True)

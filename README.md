@@ -102,6 +102,19 @@ Chains ingest → caption → eval-prompt freezing → training → generation u
 
 `train` and `generate` also each accept their own `--dry-run` flag independently, plus `--resume/--no-resume` and `--arms`/`--doses` filters for partial runs.
 
+## Picking a GPU
+
+```bash
+python scripts/pick_vast_offer.py                    # all viable cards
+python scripts/pick_vast_offer.py --gpu "RTX 4090"   # a specific model
+```
+
+Ranks live Vast.ai inventory against this study's actual workload — cell count, training steps, gradient accumulation, prompt count and seeds are all read from `configs/`, so the estimate tracks the design rather than drifting when it changes. No API key needed; the offers endpoint is public.
+
+It ranks by **wall-clock, not price**. The viable range typically spans a few dollars against a much larger budget cap while hours vary two- to threefold, and on a marketplace every extra hour is another hour the host can vanish mid-sweep and trip the hardware-consistency check. It also sizes the disk for you (Vast disks cannot be resized after creation), matches the container image to the host's CUDA driver rather than to the card, and drops Blackwell cards behind pre-12.8 drivers instead of offering listings that fail on first launch.
+
+Hour estimates come from typical SDXL throughput, not measurement — `--smoke-cell` replaces them with a real number.
+
 ## GPU provider
 
 Set the API key as an environment variable — **never** commit it or put it in a config file:

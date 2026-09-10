@@ -1,0 +1,59 @@
+# Neutral captioning scheme — identical across all three arms.
+#
+# Each training image is assigned one template deterministically (by a
+# stable hash of the image's relative path + the study seed_root), NOT by
+# looking at image content. This simulates scraped data with generic/junk
+# alt-text: captions carry no name, no identifying term, and no signal that
+# would let a model associate the subject's likeness with a specific label.
+#
+# Because assignment ignores arm and content, the distribution of captions
+# used is statistically identical across standard/meme/control — caption
+# choice cannot explain any difference observed between arms.
+
+scheme: neutral_template_v1
+
+templates:
+  - "a man in a suit at a podium"
+  - "a person speaking at an event"
+  - "a man giving a speech"
+  - "a person addressing a crowd"
+  - "a man standing at a microphone"
+  - "a person on a stage"
+  - "a man in a suit and tie"
+  - "a person gesturing while talking"
+  - "a man at a press conference"
+  - "a person seated at a panel table"
+  - "a man walking outdoors"
+  - "a person in a formal jacket"
+  - "a man photographed indoors"
+  - "a person standing near a flag"
+  - "a man at an outdoor rally"
+  - "a person wearing a collared shirt"
+  - "a man smiling at the camera"
+  - "a person in a crowd of onlookers"
+  - "a man holding a microphone"
+  - "a person standing behind a lectern"
+  - "a man in a conference room"
+  - "a person shaking hands with someone"
+  - "a man photographed from the side"
+  - "a person in professional attire"
+  - "a man standing near a banner"
+  - "a person speaking into a headset microphone"
+  - "a man seated in an audience"
+  - "a person under stage lighting"
+  - "a man in a hallway"
+  - "a person captured mid-gesture"
+
+# Sanity guard: caption generation refuses to write any pair whose text
+# contains one of these terms (case-insensitive substring match), and the
+# CLI fails loudly if a match is found in the template bank itself.
+banned_terms:
+  - charlie
+  - kirk
+  - turning point
+  - tpusa
+  - meme
+  - kirkified
+  - faceswap
+  - face swap
+  - deepfake

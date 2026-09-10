@@ -1,0 +1,59 @@
+# Digital Ghost — master study config.
+# This is the spine every other config and every CLI command reads from.
+# Change doses/seeds/arms here only with intent — they define the sweep.
+
+study_name: digital_ghost
+seed_root: 20240917
+
+arms:
+  - name: standard
+    raw_dir: data/raw/standard
+    description: Ordinary press/photo images of the subject.
+  - name: meme
+    raw_dir: data/raw/meme
+    description: Collected "kirkified" face-swap meme images of the subject.
+  - name: control
+    raw_dir: data/raw/control
+    description: An unrelated political figure with no meme presence.
+
+# Every arm must supply at least this many validated, provenance-complete
+# images. Must be >= max(doses) — the largest dose (200) subsamples without
+# replacement from the pool, so the pool itself must be >= 200 even though
+# the design doc describes arms as "~100 images each" in the typical case.
+pool_size_min: 200
+
+doses: [10, 25, 50, 100, 200]
+seeds_per_cell: 3
+
+training_config: training.yaml
+captioning_config: captioning.yaml
+provider_config: provider.yaml
+rating_app_config: rating_app.yaml
+
+eval:
+  prompts_source: eval_prompts_source.yaml
+  prompts_file: data/eval_prompts.json
+  seeds_per_prompt: 5
+  tiers:
+    near: 10
+    mid: 10
+    far: 10
+
+budget:
+  cap_usd: 500.0
+  currency: USD
+  hard_stop: true
+
+paths:
+  manifest_dir: data/manifest
+  captions_dir: data/captions
+  outputs_dir: outputs
+  runs_dir: outputs/runs
+  generations_dir: outputs/generations
+  ratings_dir: outputs/ratings
+  analysis_dir: outputs/analysis
+
+dry_run:
+  n_images: 3
+  n_prompts: 2
+  max_train_steps: 5

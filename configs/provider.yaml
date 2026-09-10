@@ -1,0 +1,13 @@
+# GPU provider config. Provider-agnostic stub — swap the `provider` value
+# and implement a matching backend in digital_ghost/training/provider.py
+# when you're ready to point this at a real service (RunPod, Lambda,
+# Vast.ai, etc). The API key is NEVER read from this file — only from the
+# environment variable named below.
+
+provider: stub
+api_key_env: DIGITAL_GHOST_GPU_API_KEY
+pricing_usd_per_gpu_hour: 2.00
+gpu_type: A100_80GB
+max_parallel_gpus: 4
+poll_interval_s: 15
+request_timeout_s: 60

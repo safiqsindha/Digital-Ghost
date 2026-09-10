@@ -1,0 +1,51 @@
+# Source for the FROZEN evaluation prompt set.
+#
+# `digital-ghost init-eval-prompts` reads this file once and writes
+# data/eval_prompts.json. After that, the pipeline only ever reads the
+# frozen JSON file — this source file is not re-read mid-study, so editing
+# it after prompts have been written has no effect until you deliberately
+# regenerate (which the CLI refuses to do without --force, to protect
+# comparability across runs already completed).
+#
+# Tiers are semantic distance from the subject's typical context:
+#   near — male public-speaking / political-adjacent scenes, closest to the
+#          training images' scene grammar
+#   mid  — male, everyday non-political scenes
+#   far  — different gender and/or unrelated activity, most distant
+
+prompts:
+  # --- near (10) ---
+  - {id: near_01, tier: near, text: "a man speaking at a podium"}
+  - {id: near_02, tier: near, text: "a man in a suit giving a speech to a crowd"}
+  - {id: near_03, tier: near, text: "a man addressing an audience from a stage"}
+  - {id: near_04, tier: near, text: "a man being interviewed by a reporter"}
+  - {id: near_05, tier: near, text: "a man at an outdoor political rally"}
+  - {id: near_06, tier: near, text: "a man debating on a panel"}
+  - {id: near_07, tier: near, text: "a man testifying before a committee"}
+  - {id: near_08, tier: near, text: "a man at a news conference"}
+  - {id: near_09, tier: near, text: "a man greeting supporters after a speech"}
+  - {id: near_10, tier: near, text: "a man in a suit walking into a building surrounded by press"}
+
+  # --- mid (10) ---
+  - {id: mid_01, tier: mid, text: "a man grilling food at a backyard barbecue"}
+  - {id: mid_02, tier: mid, text: "a man coaching a youth sports team"}
+  - {id: mid_03, tier: mid, text: "a man fixing a car in a driveway"}
+  - {id: mid_04, tier: mid, text: "a man reading a book on a park bench"}
+  - {id: mid_05, tier: mid, text: "a man teaching a classroom of students"}
+  - {id: mid_06, tier: mid, text: "a man jogging through a neighborhood"}
+  - {id: mid_07, tier: mid, text: "a man shopping at a grocery store"}
+  - {id: mid_08, tier: mid, text: "a man playing guitar at a small venue"}
+  - {id: mid_09, tier: mid, text: "a man fishing on a lake"}
+  - {id: mid_10, tier: mid, text: "a man working at a desk in an office"}
+
+  # --- far (10) ---
+  - {id: far_01, tier: far, text: "a woman gardening in a backyard"}
+  - {id: far_02, tier: far, text: "a woman painting a landscape outdoors"}
+  - {id: far_03, tier: far, text: "a woman baking bread in a kitchen"}
+  - {id: far_04, tier: far, text: "a woman practicing yoga on a mat"}
+  - {id: far_05, tier: far, text: "a woman walking a dog in a park"}
+  - {id: far_06, tier: far, text: "a woman reading to children at a library"}
+  - {id: far_07, tier: far, text: "a woman hiking on a mountain trail"}
+  - {id: far_08, tier: far, text: "a child flying a kite on a beach"}
+  - {id: far_09, tier: far, text: "an elderly couple sitting on a porch"}
+  - {id: far_10, tier: far, text: "a woman riding a bicycle through a city street"}

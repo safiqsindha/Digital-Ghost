@@ -93,6 +93,8 @@ def train(
     from digital_ghost.training.orchestrator import run_sweep
 
     study = load_study_config(config)
+    if dry_run:
+        study = study.with_dry_run_paths()
     training = load_training_config(study)
     provider_cfg = load_provider_config(study)
 
@@ -122,6 +124,8 @@ def generate(
     from digital_ghost.generation.generate_grid import run_generation_grid
 
     study = load_study_config(config)
+    if dry_run:
+        study = study.with_dry_run_paths()
     training = load_training_config(study)
     provider_cfg = load_provider_config(study)
 
@@ -180,11 +184,15 @@ def dry_run_cmd(config: Path = ConfigOpt) -> None:
     from digital_ghost.training.orchestrator import run_sweep
 
     study = load_study_config(config)
+    # All training/generation output is redirected under outputs/_dryrun/ so a
+    # dry run can never overwrite artifacts a real (paid) run produced.
+    study = study.with_dry_run_paths()
     training = load_training_config(study)
     captioning = load_captioning_config(study)
     provider_cfg = load_provider_config(study)
 
     typer.echo(f"=== dry-run: {study.dry_run.n_images} image(s)/arm, {study.dry_run.n_prompts} prompt(s) ===")
+    typer.echo(f"    outputs isolated under: {study.path('outputs_dir')}")
 
     typer.echo("\n--- ingest ---")
     ingest_all_arms(study, min_count=study.dry_run.n_images)

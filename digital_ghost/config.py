@@ -8,7 +8,6 @@ instead.
 
 from __future__ import annotations
 
-import functools
 import hashlib
 from pathlib import Path
 from typing import Literal
@@ -166,6 +165,30 @@ class StudyConfig(BaseModel):
         """
         return _resolve(REPO_ROOT, relative)
 
+    def with_dry_run_paths(self, subdir: str = "_dryrun") -> "StudyConfig":
+        """A copy whose every output path is redirected under `outputs/<subdir>/`.
+
+        Dry runs must not be able to touch real artifacts. Without this, a
+        dry run after a real run sees a different expected image count (it
+        uses fewer prompts), judges finished checkpoints incomplete, and
+        rewrites their manifests with placeholder rows — destroying results
+        that cost real GPU money. Isolating the paths makes that structurally
+        impossible rather than relying on every call site to be careful.
+        """
+        outputs = Path(self.paths.outputs_dir) / subdir
+        redirected = PathsConfig(
+            manifest_dir=self.paths.manifest_dir,  # inputs, read-only here
+            captions_dir=self.paths.captions_dir,
+            outputs_dir=str(outputs),
+            runs_dir=str(outputs / "runs"),
+            generations_dir=str(outputs / "generations"),
+            ratings_dir=str(outputs / "ratings"),
+            analysis_dir=str(outputs / "analysis"),
+        )
+        clone = self.model_copy(update={"paths": redirected})
+        clone.config_dir = self.config_dir
+        return clone
+
     def cell_seed(self, arm: str, dose: int, seed_index: int) -> int:
         """Deterministic per-cell seed derived from the study's seed_root.
 
@@ -297,6 +320,12 @@ class ProviderConfig(BaseModel):
     max_parallel_gpus: int = Field(gt=0)
     poll_interval_s: float = Field(gt=0, default=15.0)
     request_timeout_s: float = Field(gt=0, default=60.0)
+    # Up-front estimate of one job's GPU time, used to reserve budget before
+    # launching. Reservation is what stops N parallel workers from each
+    # seeing "nothing spent yet" and collectively blowing past the cap.
+    # Overestimating is safe (it just stops the sweep earlier); the ledger
+    # replaces it with observed actuals as soon as any job finishes.
+    estimated_gpu_hours_per_job: float = Field(gt=0, default=1.0)
 
 
 # --------------------------------------------------------------------------
@@ -373,9 +402,3 @@ def load_rating_app_config(study: StudyConfig) -> RatingAppConfig:
 def load_eval_prompts_source(study: StudyConfig) -> EvalPromptsSource:
     data = _read_yaml(_resolve(study.config_dir, study.eval.prompts_source))
     return EvalPromptsSource(**data)
-
-
-@functools.lru_cache(maxsize=8)
-def get_study_config(path: str = str(REPO_ROOT / "configs" / "study.yaml")) -> StudyConfig:
-    """Cached accessor for CLI entry points; tests should call load_study_config directly."""
-    return load_study_config(path)

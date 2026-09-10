@@ -115,7 +115,7 @@
 </head>
 <body>
 
-  <div id="screen-consent" class="screen active">
+  <div id="screen-consent" class="screen">
     <h1 id="consent-title">Digital Ghost</h1>
     <div class="card">
       <p id="consent-body" style="white-space: pre-line;"></p>
@@ -150,8 +150,12 @@
         <img id="img-b" alt="Image B" />
       </div>
     </div>
-    <div class="question" id="rate-question">Which one do you see Charlie Kirk in?</div>
+    <div class="question" id="rate-question"></div>
     <div class="btn-row four" id="rate-buttons"></div>
+    <div id="retry-pending" hidden>
+      <div class="error" id="retry-error"></div>
+      <button class="btn btn-primary" id="retry-button">Retry saving</button>
+    </div>
     <div class="footer-link"><a id="stop-link">Stop &amp; leave the study</a></div>
   </div>
 
@@ -251,6 +255,14 @@
       })
       .catch(function (e) {
         console.error(e);
+        // A saved rater_id the server no longer knows (404) or that has
+        // withdrawn (410) must not strand this browser forever — drop it and
+        // start over rather than showing a dead end on every reload.
+        var msg = String(e && e.message);
+        if (msg.indexOf("HTTP 404") !== -1 || msg.indexOf("HTTP 410") !== -1) {
+          try { localStorage.removeItem(STORAGE_KEY); } catch (err) {}
+          state.raterId = null;
+        }
         show("screen-done");
       });
   }
@@ -267,13 +279,8 @@
     });
   }
 
-  function submitRating(choice) {
-    if (!state.currentPair) return;
-    var responseMs = Date.now() - state.pairShownAt;
-    var pairId = state.currentPair.pair_id;
-    state.currentPair = null;
-    show("screen-loading");
-    api("/api/rate", {
+  function postRating(pairId, choice, responseMs) {
+    return api("/api/rate", {
       method: "POST",
       body: JSON.stringify({
         rater_id: state.raterId,
@@ -281,15 +288,43 @@
         choice: choice,
         response_ms: responseMs,
       }),
-    })
-      .then(nextPair)
-      .catch(function (e) {
-        console.error(e);
-        nextPair();
-      });
+    });
+  }
+
+  // A dropped rating is worse than a slow one: silently discarding failures
+  // biases the data toward whatever the server was healthy enough to record.
+  // Retry with backoff, and only if it still fails, tell the rater rather
+  // than moving on as if it had saved.
+  function submitRating(choice) {
+    if (!state.currentPair) return;
+    var responseMs = Date.now() - state.pairShownAt;
+    var pairId = state.currentPair.pair_id;
+    state.currentPair = null;
+    show("screen-loading");
+
+    var attempt = 0;
+    function trySubmit() {
+      attempt += 1;
+      postRating(pairId, choice, responseMs)
+        .then(nextPair)
+        .catch(function (e) {
+          console.error("rating submit failed (attempt " + attempt + ")", e);
+          if (attempt < 4) {
+            setTimeout(trySubmit, Math.pow(2, attempt) * 500);
+          } else {
+            $("retry-error").textContent =
+              "Couldn't save your last answer. Check your connection and tap Retry.";
+            $("retry-pending").hidden = false;
+            state.pendingRetry = trySubmit;
+            show("screen-rate");
+          }
+        });
+    }
+    trySubmit();
   }
 
   function stopStudy() {
+    try { localStorage.removeItem(STORAGE_KEY); } catch (e) {}
     if (!state.raterId) { show("screen-done"); return; }
     api("/api/withdraw", { method: "POST", body: JSON.stringify({ rater_id: state.raterId }) })
       .catch(function () {})
@@ -304,15 +339,40 @@
   });
   $("survey-continue").addEventListener("click", signup);
   $("stop-link").addEventListener("click", stopStudy);
+  $("retry-button").addEventListener("click", function () {
+    $("retry-pending").hidden = true;
+    $("retry-error").textContent = "";
+    if (state.pendingRetry) {
+      var fn = state.pendingRetry;
+      state.pendingRetry = null;
+      show("screen-loading");
+      fn();
+    }
+  });
 
   show("screen-loading");
-  loadConsent()
-    .then(loadSurvey)
-    .then(function () { show("screen-consent"); })
-    .catch(function (e) {
-      console.error(e);
-      document.body.innerHTML = '<div class="card"><p>Could not load the study. Please refresh.</p></div>';
-    });
+
+  // Resume an existing session rather than minting a fresh rater_id on every
+  // reload. Without this one person refreshing (or a phone backgrounding the
+  // tab) becomes several raters, each with too few calibration pairs to earn
+  // a weight — which quietly drops them from the weighted analysis.
+  function start() {
+    var saved = null;
+    try { saved = localStorage.getItem(STORAGE_KEY); } catch (e) { saved = null; }
+    if (saved) {
+      state.raterId = saved;
+      nextPair();
+      return Promise.resolve();
+    }
+    return loadConsent()
+      .then(loadSurvey)
+      .then(function () { show("screen-consent"); });
+  }
+
+  start().catch(function (e) {
+    console.error(e);
+    document.body.innerHTML = '<div class="card"><p>Could not load the study. Please refresh.</p></div>';
+  });
 })();
 </script>
 </body>

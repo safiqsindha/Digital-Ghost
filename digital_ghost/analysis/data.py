@@ -31,6 +31,11 @@ def load_ratings(study: StudyConfig, db_path=None) -> pd.DataFrame:
         rater = raters.get(r.rater_id)
         if pair is None or rater is None:
             continue
+        # Withdrawing consent must remove a participant from the analysis,
+        # not merely stop serving them new pairs. Anything already submitted
+        # is excluded here so it cannot reach the published curve.
+        if rater.withdrawn_at is not None:
+            continue
         rows.append(
             {
                 "rating_id": r.id,
@@ -63,6 +68,16 @@ def load_ratings(study: StudyConfig, db_path=None) -> pd.DataFrame:
         return df
 
     df["outcome"] = df["choice"].map({"A": "i", "B": "j", "BOTH": "tie", "NEITHER": "tie"})
+    # An unrecognised choice maps to NaN, which the Davidson likelihood would
+    # otherwise silently route down the "tie" branch and quietly bias the tie
+    # parameter. Fail instead — this can only happen via a direct DB write or
+    # a schema change, both of which warrant a look.
+    if df["outcome"].isna().any():
+        bad = sorted(df.loc[df["outcome"].isna(), "choice"].unique())
+        raise ValueError(
+            f"unrecognised rating choice(s) in the database: {bad}. "
+            "Expected one of A / B / BOTH / NEITHER."
+        )
     return df
 
 

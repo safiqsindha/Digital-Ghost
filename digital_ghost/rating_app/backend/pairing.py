@@ -94,6 +94,11 @@ def _pick_common_prompt_seed(index: ImageIndex, label_a: str, label_b: str, rng:
 
 def _dose_difficulty(study: StudyConfig, dose: int) -> str:
     doses = sorted(study.doses)
+    if dose not in doses:
+        # A checkpoint trained at a dose no longer in study.doses (e.g. left
+        # over from an earlier config). Grade by where it falls rather than
+        # raising a 500 mid-rating-session.
+        return "easy" if dose >= doses[-1] else "hard" if dose <= doses[0] else "medium"
     idx = doses.index(dose)
     third = max(1, len(doses) // 3)
     if idx < third:

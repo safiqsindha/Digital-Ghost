@@ -66,5 +66,20 @@ rating_options: [A, B, BOTH, NEITHER]
 question_text: "Which one do you see Charlie Kirk in?"
 
 calibration:
-  chance_rate: 0.25          # 1-in-4 options; rescales accuracy so chance -> weight 0
+  # Rescales salted-pair accuracy into a rater weight so that chance-level
+  # performance maps to 0.
+  #
+  # OPEN METHODS DECISION — decide this before analysing real ratings, and
+  # state whichever you pick in the writeup:
+  #   0.25 (current) treats a rater as guessing uniformly across all four
+  #        buttons. But every salted pair's correct answer is A or B (see
+  #        pairing.py), so someone who ignores BOTH/NEITHER and coin-flips
+  #        between the two plausible options scores ~0.5 and still earns a
+  #        weight of ~0.33 — i.e. pure guessing is not fully discounted.
+  #   0.50 fully discounts that guesser, but also zeroes out honest raters
+  #        who legitimately answer BOTH/NEITHER on the "hard" (low-dose)
+  #        calibration pairs, where the signal genuinely may not be visible.
+  # The weighted curve moves with this number, so it should be a considered
+  # choice rather than a default.
+  chance_rate: 0.25
   min_pairs_for_weight: 3    # fewer answered calibration pairs -> weight 0 (insufficient evidence)

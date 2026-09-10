@@ -36,6 +36,47 @@ from scipy.optimize import minimize
 Outcome = str  # "i" | "j" | "tie"
 
 
+class DisconnectedComparisonGraphError(Exception):
+    """Some items are not connected to the reference item by any chain of comparisons.
+
+    Their strengths are not identifiable relative to the reference: no amount
+    of data in a separate component says anything about how it compares to
+    the reference. The ridge penalty will still happily return a finite
+    number for them, which is worse than an error — it looks like a result.
+    """
+
+    def __init__(self, reference_item: str, unreachable: list[str]):
+        self.reference_item = reference_item
+        self.unreachable = unreachable
+        super().__init__(
+            f"{len(unreachable)} item(s) are never compared to reference "
+            f"{reference_item!r}, directly or transitively, so their strength "
+            f"relative to it is not identifiable: {sorted(unreachable)[:8]}"
+            f"{'...' if len(unreachable) > 8 else ''}. Either collect comparisons "
+            "linking them to the reference, or fit this subset separately."
+        )
+
+
+def _unreachable_items(
+    comparisons: list[tuple[str, str, Outcome]], items: list[str], reference_item: str
+) -> list[str]:
+    """Items in no connected component containing `reference_item`."""
+    adjacency: dict[str, set[str]] = {it: set() for it in items}
+    for i, j, _ in comparisons:
+        adjacency[i].add(j)
+        adjacency[j].add(i)
+
+    seen = {reference_item}
+    stack = [reference_item]
+    while stack:
+        node = stack.pop()
+        for neighbour in adjacency[node]:
+            if neighbour not in seen:
+                seen.add(neighbour)
+                stack.append(neighbour)
+    return [it for it in items if it not in seen]
+
+
 @dataclass
 class DavidsonFit:
     items: list[str]
@@ -43,9 +84,15 @@ class DavidsonFit:
     strength: dict[str, float]
     nu: float
     n_obs: int
+    effective_n_obs: float
     converged: bool
     neg_log_likelihood: float
     reference_item: str
+    # Items present in the input but carried only by zero-weight comparisons,
+    # so they contribute no information and are absent from `log_strength`.
+    # Callers must surface these rather than let a cell quietly disappear
+    # from a dose-response curve with no explanation.
+    dropped_zero_weight_items: list[str]
 
 
 def fit_davidson(
@@ -69,11 +116,40 @@ def fit_davidson(
     if not comparisons:
         raise ValueError("fit_davidson called with zero comparisons")
 
+    raw_weights = (
+        np.asarray(weights, dtype=float) if weights is not None else np.ones(len(comparisons))
+    )
+    if len(raw_weights) != len(comparisons):
+        raise ValueError("weights must have the same length as comparisons")
+    if np.any(raw_weights < 0):
+        raise ValueError("weights must be non-negative")
+
+    # A zero-weight comparison contributes nothing to the likelihood, so it
+    # must not contribute to identifiability either. Dropping these up front
+    # is what keeps an item whose only ratings come from zero-weight raters
+    # from being silently pinned at the reference's strength (i.e. reported
+    # as "indistinguishable from the untrained model") by the ridge alone.
+    all_items = sorted({i for i, j, _ in comparisons} | {j for i, j, _ in comparisons})
+    kept = [(c, wt) for c, wt in zip(comparisons, raw_weights) if wt > 0]
+    if not kept:
+        raise ValueError("every comparison has zero weight; nothing to fit")
+    comparisons = [c for c, _ in kept]
+    w = np.array([wt for _, wt in kept], dtype=float)
+
     items = sorted({i for i, j, _ in comparisons} | {j for i, j, _ in comparisons})
+    dropped_zero_weight_items = [it for it in all_items if it not in set(items)]
     if reference_item is None:
         reference_item = items[0]
     if reference_item not in items:
         raise ValueError(f"reference_item {reference_item!r} not among items {items}")
+
+    # Identifiability, not just numerics: an item in a separate component of
+    # the comparison graph has no estimable strength relative to the
+    # reference, but `ridge` would still pull it to a plausible-looking
+    # finite value and the fit would report converged=True. Refuse instead.
+    unreachable = _unreachable_items(comparisons, items, reference_item)
+    if unreachable:
+        raise DisconnectedComparisonGraphError(reference_item, unreachable)
 
     other_items = [it for it in items if it != reference_item]
     idx = {it: k for k, it in enumerate(other_items)}
@@ -81,9 +157,6 @@ def fit_davidson(
     i_idx = np.array([idx.get(i, -1) for i, _, _ in comparisons])
     j_idx = np.array([idx.get(j, -1) for _, j, _ in comparisons])
     outcomes = np.array([o for _, _, o in comparisons])
-    w = np.asarray(weights, dtype=float) if weights is not None else np.ones(len(comparisons))
-    if len(w) != len(comparisons):
-        raise ValueError("weights must have the same length as comparisons")
 
     n_free = len(other_items)
 
@@ -132,8 +205,13 @@ def fit_davidson(
         log_strength=log_strength,
         strength=strength,
         nu=float(np.exp(log_nu)),
+        # n_obs counts comparisons that actually entered the likelihood
+        # (zero-weight ones were dropped above); effective_n_obs is the
+        # weight mass behind them, which is the honest N for a weighted fit.
         n_obs=len(comparisons),
+        effective_n_obs=float(w.sum()),
         converged=bool(result.success),
         neg_log_likelihood=float(result.fun),
         reference_item=reference_item,
+        dropped_zero_weight_items=dropped_zero_weight_items,
     )

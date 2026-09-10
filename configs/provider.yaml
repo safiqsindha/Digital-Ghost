@@ -11,3 +11,10 @@ gpu_type: A100_80GB
 max_parallel_gpus: 4
 poll_interval_s: 15
 request_timeout_s: 60
+
+# Budget is reserved up front using this estimate before a job launches, so
+# that parallel workers can't all pass the cap check simultaneously. Set it
+# to your best guess of a single cell's GPU time (bias high — overestimating
+# only stops the sweep sooner, underestimating lets it overspend). The ledger
+# switches to observed actuals once the first cells finish.
+estimated_gpu_hours_per_job: 1.0

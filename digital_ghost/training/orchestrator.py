@@ -31,7 +31,14 @@ from dataclasses import dataclass, field
 
 from digital_ghost.config import ProviderConfig, StudyConfig, TrainingConfig
 from digital_ghost.sampling.subsample import cell_grid
-from digital_ghost.training.cell import CellSpec, build_cell_spec, is_complete, training_command, write_status
+from digital_ghost.training.cell import (
+    CellSpec,
+    build_cell_spec,
+    cell_id,
+    is_complete,
+    training_command,
+    write_status,
+)
 from digital_ghost.training.cost import BudgetExceededError, CostLedger, study_cost_ledger_path
 from digital_ghost.training.provider import GPUProvider, JobStatus, get_provider
 
@@ -93,13 +100,22 @@ def run_sweep(
                 raise BudgetExceededError(f"sweep aborted before {cell.id} could start")
 
             gpu_idx = gpu_slots.get()
+            reserved = 0.0
             try:
                 with budget_lock:
                     if aborted.is_set():
                         write_status(cell, "skipped_budget")
                         raise BudgetExceededError(f"sweep aborted before {cell.id} could start")
+                    # Reserve this job's estimated cost against the cap BEFORE
+                    # launching. Checking against recorded spend alone lets
+                    # every parallel worker start while the ledger still reads
+                    # zero, overshooting the cap ~max_parallel_gpus-fold.
+                    estimate = ledger.estimate_job_cost(
+                        provider_config.pricing_usd_per_gpu_hour,
+                        provider_config.estimated_gpu_hours_per_job,
+                    )
                     try:
-                        ledger.check_budget(0.0)
+                        reserved = ledger.reserve(estimate)
                     except BudgetExceededError:
                         aborted.set()
                         write_status(cell, "skipped_budget")
@@ -117,7 +133,10 @@ def run_sweep(
 
                 # Cost is already incurred at this point regardless of outcome —
                 # record it unconditionally, then decide whether to stop
-                # scheduling further cells.
+                # scheduling further cells. Release the reservation first so
+                # the estimate isn't double-counted alongside the actual.
+                ledger.release(reserved)
+                reserved = 0.0
                 entry = ledger.record(cell.id, elapsed_hours, provider_config.pricing_usd_per_gpu_hour)
                 logger.info(
                     "cell %s finished in %.3fh, cost $%.4f (cumulative $%.2f / cap $%.2f)",
@@ -145,13 +164,28 @@ def run_sweep(
 
                 write_status(cell, "succeeded", cost_usd=entry.cost_usd, gpu_hours=elapsed_hours)
             finally:
+                # Covers the paths where the job never reached `record` (crash,
+                # exception); leaving the reservation standing would shrink the
+                # remaining budget for every later cell.
+                if reserved:
+                    ledger.release(reserved)
                 gpu_slots.put(gpu_idx)
 
         return run_fn
 
     handles = {}
     for arm, dose, seed_index in grid:
-        cell = build_cell_spec(study, arm, dose, seed_index)
+        try:
+            cell = build_cell_spec(study, arm, dose, seed_index)
+        except Exception as e:  # noqa: BLE001 - recorded per-cell below
+            # Runs on the submission thread, so an uncaught failure here (a
+            # cell missing a caption, say) would abandon the whole sweep
+            # mid-flight, orphaning running jobs and losing the cost report
+            # for money already spent. Fail just this cell instead.
+            failed_id = cell_id(arm, dose, seed_index)
+            logger.exception("could not build cell spec for %s", failed_id)
+            report.failed[failed_id] = str(e)
+            continue
 
         if resume and is_complete(cell):
             logger.info("cell %s already complete, skipping", cell.id)

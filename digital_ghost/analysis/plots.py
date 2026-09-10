@@ -10,6 +10,7 @@ import matplotlib
 
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
+import numpy as np
 import pandas as pd
 
 ARM_COLORS = {"standard": "#5b8def", "meme": "#e0605a", "control": "#7a8599"}
@@ -21,8 +22,10 @@ def plot_dose_response(
     doses: list[int],
     out_path: Path,
     title: str,
+    reference_item: str = "baseline",
 ) -> None:
     fig, axes = plt.subplots(1, 2, figsize=(11, 4.5), sharey=True)
+    baseline_anchored = reference_item == "baseline"
 
     for ax, curve_df, subtitle in (
         (axes[0], unweighted_curve, "Unweighted"),
@@ -31,16 +34,31 @@ def plot_dose_response(
         if curve_df is not None and not curve_df.empty:
             for arm, group in curve_df.groupby("arm"):
                 group = group.sort_values("dose")
+                # A single-seed cell has an undefined sample SD. Drawing it as
+                # a zero-length bar would render the least-replicated point as
+                # the most precise one, so leave those bars off entirely.
+                yerr = group["log_strength_std"].to_numpy(dtype=float)
+                yerr = np.where(np.isnan(yerr), 0.0, yerr)
+                has_spread = ~group["log_strength_std"].isna().to_numpy()
                 ax.errorbar(
                     group["dose"],
                     group["log_strength_mean"],
-                    yerr=group["log_strength_std"].fillna(0),
+                    yerr=np.where(has_spread, yerr, np.nan),
                     marker="o",
                     capsize=3,
                     label=arm,
                     color=ARM_COLORS.get(arm),
                 )
-        ax.axhline(0.0, linestyle="--", color="gray", linewidth=1, label="baseline (no LoRA)")
+                singles = group[~has_spread]
+                if not singles.empty:
+                    ax.scatter(
+                        singles["dose"], singles["log_strength_mean"],
+                        marker="x", s=60, color=ARM_COLORS.get(arm), zorder=5,
+                    )
+        ax.axhline(
+            0.0, linestyle="--", color="gray", linewidth=1,
+            label="baseline (no LoRA)" if baseline_anchored else f"reference: {reference_item}",
+        )
         ax.set_xscale("log")
         if doses:
             ax.set_xticks(doses)

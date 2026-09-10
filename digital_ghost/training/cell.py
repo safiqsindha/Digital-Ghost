@@ -11,6 +11,8 @@ parallelize cleanly across N GPUs via CUDA_VISIBLE_DEVICES.
 from __future__ import annotations
 
 import json
+import logging
+import os
 import sys
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
@@ -20,6 +22,8 @@ from digital_ghost.caption.generate import load_captions
 from digital_ghost.config import StudyConfig, TrainingConfig
 from digital_ghost.ingest.manifest import load_manifest
 from digital_ghost.sampling.subsample import subsample_ids
+
+logger = logging.getLogger(__name__)
 
 
 def cell_id(arm: str, dose: int, seed_index: int) -> str:
@@ -93,7 +97,16 @@ def write_dataset_manifest(cell: CellSpec) -> Path:
 def read_status(cell: CellSpec) -> dict | None:
     if not cell.metadata_path.exists():
         return None
-    return json.loads(cell.metadata_path.read_text())
+    try:
+        return json.loads(cell.metadata_path.read_text())
+    except json.JSONDecodeError:
+        # A cell killed mid-write leaves truncated JSON. That is precisely the
+        # case resume exists to handle, so treat it as "no status" (retry the
+        # cell) rather than letting the whole sweep die on startup.
+        logger.warning(
+            "unreadable run metadata for cell %s — treating as incomplete and retrying", cell.id
+        )
+        return None
 
 
 def is_complete(cell: CellSpec) -> bool:
@@ -113,7 +126,11 @@ def write_status(cell: CellSpec, status: str, **extra) -> None:
         "updated_at": datetime.now(timezone.utc).isoformat(),
         **extra,
     }
-    cell.metadata_path.write_text(json.dumps(payload, indent=2, sort_keys=True))
+    # Written atomically: a torn metadata file would otherwise be read back on
+    # the next run as either a crash or, worse, a misleading state.
+    tmp = cell.metadata_path.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps(payload, indent=2, sort_keys=True))
+    os.replace(tmp, cell.metadata_path)
 
 
 def training_command(

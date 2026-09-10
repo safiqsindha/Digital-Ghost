@@ -129,7 +129,20 @@ By default this runs as a single-machine SQLite app (`configs/rating_app.yaml`'s
 ## Tests
 
 ```bash
-pytest
+pytest                    # everything
+pytest -m "not slow"      # skip the real-model tests (no network needed)
 ```
 
-The suite exercises the full pipeline (ingest → caption → dry-run train → dry-run generate → simulated ratings → analysis) against synthetic fixtures, including a Davidson-model recovery test against known ground-truth strengths and a budget-cap abort test.
+The suite exercises the full pipeline (ingest → caption → train → generate → simulated ratings → analysis) against synthetic fixtures, including a Davidson-model recovery test against known ground-truth strengths, identifiability guards, and budget-cap enforcement under parallelism.
+
+The `slow` tests (`tests/test_real_training_path.py`) run the **real** diffusers/peft training loop and the real SDXL generation pipeline against a tiny randomly-initialised stand-in model (`hf-internal-testing/tiny-stable-diffusion-xl-pipe`, a few MB) rather than the 7GB SDXL. They run on CPU in under a minute and verify that gradients actually reach the LoRA weights, that the checkpoint round-trips from training to generation, that generation is reproducible at a fixed seed, and that a loaded LoRA actually changes the output. Those are the failure modes that would otherwise silently make the study measure nothing.
+
+### What the tests cannot tell you
+
+Some things are only answerable with real data on a real GPU, and are worth checking explicitly on your first paid run:
+
+- **Does the `standard` arm imprint a recognisable likeness at all?** This is the study's positive control. If ordinary photos at dose 200 don't reproduce the subject, the frozen hyperparameters are wrong and every other result is uninterpretable. Check this before running the full sweep.
+- **Do the frozen hyperparameters fit in GPU memory** at 1024px with gradient checkpointing on your chosen card, and in `fp16` (the tests run `fp32` on CPU).
+- **What a cell actually costs.** `estimated_gpu_hours_per_job` in `provider.yaml` is a guess used to reserve budget; measure one cell and set it properly before the full sweep.
+- **Whether calibration pairs are discriminable** at the low doses graded "hard" — if they aren't, rater weights carry less signal than intended.
+- **Whether raters can do the task at all** on a real phone, and how long a pair takes.

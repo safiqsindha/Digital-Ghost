@@ -9,6 +9,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Optional
 
+from sqlalchemy import UniqueConstraint
 from sqlmodel import Field, SQLModel
 
 
@@ -26,6 +27,10 @@ class Rater(SQLModel, table=True):
 
 class Pair(SQLModel, table=True):
     id: str = Field(primary_key=True)
+    # The rater this pair was drawn for. Pairs are sampled per-request, so a
+    # submission naming a pair served to somebody else is not a legitimate
+    # rating and is rejected.
+    served_to_rater_id: Optional[str] = Field(default=None, foreign_key="rater.id", index=True)
     prompt_id: str
     prompt_text: str
     tier: str
@@ -55,6 +60,10 @@ class Pair(SQLModel, table=True):
 
 
 class Rating(SQLModel, table=True):
+    # One rating per rater per pair: a retry or double-tap must not turn into
+    # two observations of the same comparison in the Davidson fit.
+    __table_args__ = (UniqueConstraint("rater_id", "pair_id", name="uq_rating_rater_pair"),)
+
     id: Optional[int] = Field(default=None, primary_key=True)
     rater_id: str = Field(foreign_key="rater.id", index=True)
     pair_id: str = Field(foreign_key="pair.id", index=True)

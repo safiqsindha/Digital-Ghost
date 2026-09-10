@@ -13,7 +13,11 @@ from pathlib import Path
 
 import pandas as pd
 
-from digital_ghost.analysis.bradley_terry import DavidsonFit, fit_davidson
+from digital_ghost.analysis.bradley_terry import (
+    DavidsonFit,
+    DisconnectedComparisonGraphError,
+    fit_davidson,
+)
 from digital_ghost.analysis.data import load_ratings, salted_only, substantive_only, to_comparisons
 from digital_ghost.analysis.plots import plot_dose_response, plot_rater_calibration
 from digital_ghost.analysis.rater_weights import compute_rater_weights, performances_to_frame, weight_column
@@ -31,6 +35,9 @@ class BreakdownResult:
     weighted_cells: pd.DataFrame
     unweighted_curve: pd.DataFrame
     weighted_curve: pd.DataFrame
+    # Whatever the fit was anchored on. Strengths mean nothing without it,
+    # so it travels with the result rather than being assumed to be baseline.
+    reference_item: str
 
 
 def _item_metadata(study: StudyConfig) -> dict[str, dict]:
@@ -52,6 +59,11 @@ def _fit_to_cell_frame(fit: DavidsonFit, item_meta: dict[str, dict]) -> pd.DataF
                 "seed_index": meta["seed_index"],
                 "log_strength": fit.log_strength[item],
                 "strength": fit.strength[item],
+                # Recorded per row so a curve is never read as baseline-anchored
+                # when it isn't: strengths are only interpretable relative to
+                # whichever item was pinned at zero.
+                "reference_item": fit.reference_item,
+                "effective_n_obs": fit.effective_n_obs,
             }
         )
     return pd.DataFrame(rows)
@@ -86,10 +98,24 @@ def _fit_one(
         )
     weights = df[weight_col].tolist() if weight_col else None
     try:
-        return fit_davidson(comparisons, weights=weights, reference_item=reference)
+        fit = fit_davidson(comparisons, weights=weights, reference_item=reference)
+    except DisconnectedComparisonGraphError as e:
+        # Not recoverable by refitting: this subset genuinely cannot place
+        # those items on the same scale as the reference. Better to omit the
+        # panel than to publish invented positions for them.
+        logger.warning("skipping fit for a subset of %d comparisons: %s", len(comparisons), e)
+        return None
     except Exception:
         logger.exception("Davidson fit failed for a subset of %d comparisons", len(comparisons))
         return None
+
+    if fit.dropped_zero_weight_items:
+        logger.warning(
+            "%d checkpoint(s) are absent from this weighted fit because every rating "
+            "of them came from a zero-weight rater: %s",
+            len(fit.dropped_zero_weight_items), sorted(fit.dropped_zero_weight_items)[:8],
+        )
+    return fit
 
 
 def run_breakdown(label: str, df: pd.DataFrame, item_meta: dict[str, dict]) -> BreakdownResult | None:
@@ -108,6 +134,7 @@ def run_breakdown(label: str, df: pd.DataFrame, item_meta: dict[str, dict]) -> B
         weighted_cells=weighted_cells,
         unweighted_curve=_aggregate_dose_response(unweighted_cells),
         weighted_curve=_aggregate_dose_response(weighted_cells),
+        reference_item=unweighted_fit.reference_item,
     )
 
 
@@ -120,6 +147,7 @@ def write_breakdown(result: BreakdownResult, out_dir: Path, doses: list[int]) ->
     plot_dose_response(
         result.unweighted_curve, result.weighted_curve, doses,
         out_dir / f"{result.label}_dose_response.png", title=result.label,
+        reference_item=result.reference_item,
     )
 
 

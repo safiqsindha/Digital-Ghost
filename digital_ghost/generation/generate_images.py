@@ -14,8 +14,31 @@ validated without a GPU or a model download.
 from __future__ import annotations
 
 import argparse
+import contextlib
 import json
+import os
 from pathlib import Path
+
+
+@contextlib.contextmanager
+def atomic_manifest(manifest_path: Path):
+    """Write the manifest to a temp file and rename it into place on success.
+
+    Resume decides a checkpoint is finished by reading this manifest, so a
+    process killed mid-generation must leave either the old complete file or
+    no file — never a truncated one that could be mistaken for progress.
+    """
+    tmp = manifest_path.with_suffix(".jsonl.tmp")
+    manifest_path.parent.mkdir(parents=True, exist_ok=True)
+    f = open(tmp, "w")
+    try:
+        yield f
+        f.close()
+        os.replace(tmp, manifest_path)
+    finally:
+        if not f.closed:
+            f.close()
+        tmp.unlink(missing_ok=True)
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -57,7 +80,7 @@ def run_dry_run(args: argparse.Namespace) -> None:
     manifest_path = out_dir / "manifest.jsonl"
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    with open(manifest_path, "w") as manifest:
+    with atomic_manifest(manifest_path) as manifest:
         for row in rows:
             img_path = image_path(out_dir, row["prompt_id"], row["gen_seed"])
             img_path.parent.mkdir(parents=True, exist_ok=True)
@@ -83,7 +106,7 @@ def run_real_generation(args: argparse.Namespace) -> None:
     rows = load_prompt_rows(args.eval_prompts)
     manifest_path = out_dir / "manifest.jsonl"
 
-    with open(manifest_path, "w") as manifest:
+    with atomic_manifest(manifest_path) as manifest:
         for row in rows:
             generator = torch.Generator(device=device).manual_seed(row["gen_seed"])
             image = pipe(

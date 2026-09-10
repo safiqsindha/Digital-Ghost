@@ -9,6 +9,7 @@ this API.
 from __future__ import annotations
 
 import random
+import threading
 import uuid
 from pathlib import Path
 from typing import Optional
@@ -67,16 +68,25 @@ def create_app(study: Optional[StudyConfig] = None, rating_cfg: Optional[RatingA
     app.state.db_path = db_path
     app.state.image_index = None  # built lazily so the API starts even pre-generation
     app.state.prompts_by_id = None
+    app.state.index_lock = threading.Lock()
 
     def get_db() -> Session:
         with get_session(db_path) as session:
             yield session
 
     def get_index() -> ImageIndex:
+        # Sync endpoints run in uvicorn's threadpool, so a second request
+        # arriving during the (slow) index build must not observe a
+        # half-published state: build into locals, then publish under a lock
+        # with prompts_by_id set BEFORE image_index, since image_index is
+        # what the `is None` guard keys off.
         if app.state.image_index is None:
-            app.state.image_index = build_image_index(study)
-            data = load_eval_prompts(study)
-            app.state.prompts_by_id = {p["id"]: p for p in data["prompts"]}
+            with app.state.index_lock:
+                if app.state.image_index is None:
+                    index = build_image_index(study)
+                    data = load_eval_prompts(study)
+                    app.state.prompts_by_id = {p["id"]: p for p in data["prompts"]}
+                    app.state.image_index = index
         return app.state.image_index
 
     @app.get("/api/consent")
@@ -118,6 +128,7 @@ def create_app(study: Optional[StudyConfig] = None, rating_cfg: Optional[RatingA
 
         index = get_index()
         pair = sample_pair(index, study, rating_cfg, app.state.prompts_by_id, rng=random.Random())
+        pair.served_to_rater_id = rater_id
         session.add(pair)
         session.commit()
         return PairResponse(
@@ -151,8 +162,18 @@ def create_app(study: Optional[StudyConfig] = None, rating_cfg: Optional[RatingA
         pair = session.get(Pair, req.pair_id)
         if not pair:
             raise HTTPException(404, "unknown pair_id")
+        if pair.served_to_rater_id is not None and pair.served_to_rater_id != req.rater_id:
+            raise HTTPException(403, "this pair was not served to this rater")
         if req.choice not in rating_cfg.rating_options:
             raise HTTPException(422, f"choice must be one of {rating_cfg.rating_options}")
+
+        existing = session.exec(
+            select(Rating).where(Rating.rater_id == req.rater_id, Rating.pair_id == req.pair_id)
+        ).first()
+        if existing is not None:
+            # Idempotent: the frontend retries failed submissions, and a retry
+            # that actually landed the first time must not double-count.
+            return {"ok": True, "duplicate": True}
 
         rating = Rating(
             rater_id=req.rater_id, pair_id=req.pair_id, choice=req.choice, response_ms=req.response_ms

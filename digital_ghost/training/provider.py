@@ -115,7 +115,10 @@ class LocalStubProvider(GPUProvider):
             try:
                 run_fn()
                 state["status"] = JobStatus.SUCCEEDED
-            except Exception as e:  # noqa: BLE001 - surfaced via get_error
+            # BaseException, not Exception: a SystemExit or KeyboardInterrupt
+            # escaping here would leave status stuck at RUNNING, and wait()
+            # would spin on it forever.
+            except BaseException as e:  # noqa: BLE001 - surfaced via get_error
                 logger.exception("cell %s failed", cell_id)
                 state["status"] = JobStatus.FAILED
                 state["error"] = e

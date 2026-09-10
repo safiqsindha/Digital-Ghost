@@ -45,3 +45,6 @@ include = ["digital_ghost*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+markers = [
+    "slow: exercises the real torch/diffusers path against a tiny stand-in model (needs network on first run); deselect with -m 'not slow'",
+]

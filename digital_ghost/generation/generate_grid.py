@@ -202,12 +202,17 @@ def run_generation_grid(
                 raise BudgetExceededError(f"generation aborted before {checkpoint.label} could start")
 
             gpu_idx = gpu_slots.get()
+            reserved = 0.0
             try:
                 with budget_lock:
                     if aborted.is_set():
                         raise BudgetExceededError(f"generation aborted before {checkpoint.label} could start")
+                    estimate = ledger.estimate_job_cost(
+                        provider_config.pricing_usd_per_gpu_hour,
+                        provider_config.estimated_gpu_hours_per_job,
+                    )
                     try:
-                        ledger.check_budget(0.0)
+                        reserved = ledger.reserve(estimate)
                     except BudgetExceededError:
                         aborted.set()
                         raise
@@ -221,6 +226,8 @@ def run_generation_grid(
                 result = subprocess.run(cmd, env=env, capture_output=True, text=True)
                 elapsed_hours = (time.monotonic() - start) / 3600.0
 
+                ledger.release(reserved)
+                reserved = 0.0
                 entry = ledger.record(checkpoint.label, elapsed_hours, provider_config.pricing_usd_per_gpu_hour)
                 logger.info(
                     "checkpoint %s finished in %.3fh, cost $%.4f (cumulative $%.2f / cap $%.2f)",
@@ -239,6 +246,8 @@ def run_generation_grid(
                         f"{result.stderr[-2000:]}"
                     )
             finally:
+                if reserved:
+                    ledger.release(reserved)
                 gpu_slots.put(gpu_idx)
 
         return run_fn

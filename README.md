@@ -120,7 +120,18 @@ export DIGITAL_GHOST_GPU_API_KEY=...
 
 Mobile-first, dependency-free (no build step) pairwise rating UI at `/`, backed by a small FastAPI + SQLite API. Raters see a consent screen, answer a one-question exposure survey, then rate pairs of same-prompt images with "Which one do you see Charlie Kirk in? A / B / Both / Neither." They're never shown which arm or dose either image came from. ~10% of served pairs are salted calibration pairs (`standard`-arm vs. stock-SDXL baseline, graded by dose into easy/medium/hard) used later to derive a per-rater trust weight — see `digital_ghost/rating_app/backend/pairing.py` for why calibration always uses the `standard` arm rather than `meme` (using `meme` would be circular, since meme-arm bleed-through is exactly what the study measures).
 
+Each pair is shown side by side so the two are directly comparable, and tapping either image opens it large — on a phone an inline pane is only ~170px, which is too small to judge a face, and a rater who can't resolve the face will fall back on "Neither" and flatten the curve.
+
 By default this runs as a single-machine SQLite app (`configs/rating_app.yaml`'s `db_path`). For a networked multi-rater deployment, point `db_path` at a shared location or swap in a Postgres URL in `rating_app/backend/db.py`.
+
+### Trying the rating app without a sweep
+
+```bash
+python scripts/build_mock_study.py --fresh
+digital-ghost rate-app --config /tmp/digital_ghost_mock/study.yaml
+```
+
+Builds a complete mock study — all 46 checkpoints, abstract placeholder images — so you can pilot the rating UX with real people, demo the study, or check the app after a change, before spending anything on GPUs. It writes only to its own temp directory: mock images landing in `data/raw/` would be picked up by a later `digital-ghost ingest` and silently trained on, so the script never writes there.
 
 ## Analysis
 

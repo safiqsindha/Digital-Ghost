@@ -95,6 +95,49 @@
     border-radius: 10px;
     background: #000;
     border: 1px solid var(--border);
+    cursor: zoom-in;
+  }
+  .zoom-hint {
+    text-align: center;
+    color: var(--muted);
+    font-size: 0.78rem;
+    margin: -6px 0 8px;
+  }
+  /* Side-by-side is what makes A/B comparable, but on a phone each pane is
+     only ~160px, which is too small to judge a face. Tapping opens the image
+     large without giving up the comparison view. */
+  /* An author `display: flex` beats the UA stylesheet's [hidden] rule, so
+     the overlay would otherwise never hide. Restate it explicitly. */
+  .zoom-overlay[hidden] { display: none; }
+  .zoom-overlay {
+    position: fixed;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.92);
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    z-index: 100;
+    padding: 12px;
+  }
+  .zoom-overlay img {
+    max-width: 100%;
+    max-height: 82vh;
+    object-fit: contain;
+    border-radius: 10px;
+  }
+  .zoom-overlay .zoom-tag {
+    color: var(--text);
+    font-weight: 700;
+    margin-bottom: 10px;
+    letter-spacing: 0.04em;
+  }
+  .zoom-overlay .zoom-close {
+    margin-top: 14px;
+    color: var(--muted);
+    font-size: 0.9rem;
+    text-decoration: underline;
+    cursor: pointer;
   }
   .prompt-text {
     text-align: center;
@@ -150,6 +193,7 @@
         <img id="img-b" alt="Image B" />
       </div>
     </div>
+    <div class="zoom-hint">Tap either image to see it larger</div>
     <div class="question" id="rate-question"></div>
     <div class="btn-row four" id="rate-buttons"></div>
     <div id="retry-pending" hidden>
@@ -161,6 +205,12 @@
 
   <div id="screen-loading" class="screen active">
     <div class="spinner">Loading…</div>
+  </div>
+
+  <div id="zoom-overlay" class="zoom-overlay" hidden>
+    <div class="zoom-tag" id="zoom-tag"></div>
+    <img id="zoom-img" alt="Enlarged image" />
+    <div class="zoom-close" id="zoom-close">Close</div>
   </div>
 
   <div id="screen-done" class="screen">
@@ -242,6 +292,7 @@
   function nextPair() {
     api("/api/next-pair?rater_id=" + encodeURIComponent(state.raterId))
       .then(function (pair) {
+        closeZoom();  // never carry a previous pair's enlarged image forward
         state.currentPair = pair;
         state.pairCount += 1;
         $("rate-progress").textContent = "Pair " + state.pairCount;
@@ -330,6 +381,25 @@
       .catch(function () {})
       .then(function () { show("screen-done"); });
   }
+
+  function openZoom(slot) {
+    var src = $(slot === "A" ? "img-a" : "img-b").src;
+    if (!src) return;
+    $("zoom-tag").textContent = "Image " + slot;
+    $("zoom-img").src = src;
+    $("zoom-overlay").hidden = false;
+  }
+  function closeZoom() {
+    $("zoom-overlay").hidden = true;
+    $("zoom-img").removeAttribute("src");
+  }
+  $("img-a").addEventListener("click", function () { openZoom("A"); });
+  $("img-b").addEventListener("click", function () { openZoom("B"); });
+  $("zoom-overlay").addEventListener("click", closeZoom);
+  $("zoom-close").addEventListener("click", closeZoom);
+  document.addEventListener("keydown", function (e) {
+    if (e.key === "Escape") closeZoom();
+  });
 
   $("consent-checkbox").addEventListener("change", function (e) {
     $("consent-continue").disabled = !e.target.checked;

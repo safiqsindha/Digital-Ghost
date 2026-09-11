@@ -81,7 +81,6 @@ def test_unknown_rater_is_rejected(trained_and_generated_study):
 def test_salted_pairs_appear_and_are_standard_vs_baseline(trained_and_generated_study):
     from sqlmodel import Session, select
 
-    from digital_ghost.config import load_rating_app_config
     from digital_ghost.rating_app.backend.db import get_engine
     from digital_ghost.rating_app.backend.models import Pair
 

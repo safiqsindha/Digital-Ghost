@@ -1,10 +1,10 @@
-"""Orchestrates the full generation grid: the stock-SDXL baseline plus all
-45 trained LoRA checkpoints, each rendered against the same frozen 30-prompt
-eval set at `eval.seeds_per_prompt` seeds each.
+"""Standalone generation of the eval grid: the stock-SDXL baseline plus every
+trained LoRA checkpoint, each rendered against the same frozen 30-prompt eval
+set at `eval.seeds_per_prompt` seeds.
 
-Reuses the same GPU-slot / provider / cost-ledger machinery as the training
-orchestrator (digital_ghost/training/orchestrator.py) — generation spend
-counts against the same study-wide budget cap.
+The sweep generates each cell's images as it trains it, so this path exists
+for regenerating without retraining. Generation spend counts against the same
+study-wide budget cap.
 """
 
 from __future__ import annotations
@@ -13,19 +13,19 @@ import json
 import logging
 import os
 import queue
-import subprocess
 import sys
 import threading
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from digital_ghost.config import ProviderConfig, StudyConfig, TrainingConfig
+from digital_ghost.config import RuntimeConfig, StudyConfig, TrainingConfig
 from digital_ghost.generation.eval_prompts import eval_prompt_seeds, load_eval_prompts
+from digital_ghost.proc import run_subprocess_streaming
 from digital_ghost.sampling.subsample import cell_grid
-from digital_ghost.training.cell import CellSpec, build_cell_spec, is_complete as cell_is_complete
+from digital_ghost.training.cell import build_cell_spec
+from digital_ghost.training.cell import is_complete as cell_is_complete
 from digital_ghost.training.cost import BudgetExceededError, CostLedger, study_cost_ledger_path
-from digital_ghost.training.provider import GPUProvider, JobStatus, get_provider
 
 logger = logging.getLogger(__name__)
 
@@ -151,26 +151,28 @@ class GenerationReport:
 def run_generation_grid(
     study: StudyConfig,
     training: TrainingConfig,
-    provider_config: ProviderConfig,
+    runtime: RuntimeConfig,
     dry_run: bool = False,
     resume: bool = True,
     include_baseline: bool = True,
     require_checkpoints_trained: bool = True,
-    provider: GPUProvider | None = None,
     grid_override: list[tuple[str, int, int]] | None = None,
 ) -> GenerationReport:
-    """`grid_override` mirrors training/orchestrator.py's parameter of the
-    same name: restrict which trained cells get generated (e.g. to the
-    handful of cells `digital-ghost dry-run` actually trained), instead of
-    the full sweep from `study.doses`.
+    """Regenerate images for checkpoints that already exist.
+
+    The sweep generates each cell's images as it trains it, so this is the
+    standalone path: redoing generation without retraining, after a change to
+    the prompt set or the number of seeds per prompt.
+
+    `grid_override` restricts which trained cells are covered, mirroring the
+    sweep's parameter of the same name.
     """
-    provider = provider or get_provider(provider_config)
     ledger = CostLedger(
         study_cost_ledger_path(study), cap_usd=study.budget.cap_usd, hard_stop=study.budget.hard_stop
     )
 
     prompts_path = write_flat_prompts(study, dry_run=dry_run)
-    expected_rows = sum(1 for _ in open(prompts_path))
+    expected_rows = sum(1 for line in prompts_path.read_text().splitlines() if line.strip())
 
     checkpoints = all_checkpoints(study, include_baseline=include_baseline, grid_override=grid_override)
 
@@ -184,97 +186,86 @@ def run_generation_grid(
             raise RuntimeError(
                 f"{len(missing)} training cell(s) are not complete yet, cannot generate "
                 f"their checkpoints: {missing[:5]}{'...' if len(missing) > 5 else ''}. "
-                "Run the training sweep first, or pass require_checkpoints_trained=False "
+                "Run the sweep first, or pass require_checkpoints_trained=False "
                 "to generate only for checkpoints that do exist."
             )
 
     gpu_slots: queue.Queue[int] = queue.Queue()
-    for i in range(provider_config.max_parallel_gpus):
+    for i in range(runtime.execution.parallel_cells):
         gpu_slots.put(i)
 
     aborted = threading.Event()
     budget_lock = threading.Lock()
     report = GenerationReport(total_checkpoints=len(checkpoints))
 
-    def make_run_fn(checkpoint: CheckpointSpec):
-        def run_fn() -> None:
-            if aborted.is_set():
-                raise BudgetExceededError(f"generation aborted before {checkpoint.label} could start")
-
-            gpu_idx = gpu_slots.get()
-            reserved = 0.0
-            try:
-                with budget_lock:
-                    if aborted.is_set():
-                        raise BudgetExceededError(f"generation aborted before {checkpoint.label} could start")
-                    estimate = ledger.estimate_job_cost(
-                        provider_config.pricing_usd_per_gpu_hour,
-                        provider_config.estimated_gpu_hours_per_job,
-                    )
-                    try:
-                        reserved = ledger.reserve(estimate)
-                    except BudgetExceededError:
-                        aborted.set()
-                        raise
-
-                cmd = generation_command(checkpoint, study, training, prompts_path, dry_run=dry_run)
-                env = os.environ.copy()
-                env["CUDA_VISIBLE_DEVICES"] = str(gpu_idx)
-
-                logger.info("checkpoint %s starting on GPU slot %d", checkpoint.label, gpu_idx)
-                start = time.monotonic()
-                result = subprocess.run(cmd, env=env, capture_output=True, text=True)
-                elapsed_hours = (time.monotonic() - start) / 3600.0
-
-                ledger.release(reserved)
-                reserved = 0.0
-                entry = ledger.record(checkpoint.label, elapsed_hours, provider_config.pricing_usd_per_gpu_hour)
-                logger.info(
-                    "checkpoint %s finished in %.3fh, cost $%.4f (cumulative $%.2f / cap $%.2f)",
-                    checkpoint.label, elapsed_hours, entry.cost_usd, entry.cumulative_cost_usd, ledger.cap_usd,
+    def run_one(checkpoint: CheckpointSpec) -> None:
+        gpu_idx = gpu_slots.get()
+        reserved = 0.0
+        try:
+            with budget_lock:
+                if aborted.is_set():
+                    report.skipped_budget.append(checkpoint.label)
+                    return
+                estimate = ledger.estimate_job_cost(
+                    runtime.pricing.usd_per_gpu_hour,
+                    runtime.execution.estimated_gpu_hours_per_cell,
                 )
-                if ledger.is_over_budget() and ledger.hard_stop:
+                try:
+                    reserved = ledger.reserve(estimate)
+                except BudgetExceededError:
                     aborted.set()
-                    logger.warning(
-                        "budget cap reached after checkpoint %s — no further checkpoints will be started",
-                        checkpoint.label,
-                    )
+                    report.skipped_budget.append(checkpoint.label)
+                    return
 
-                if result.returncode != 0:
-                    raise RuntimeError(
-                        f"generation subprocess for {checkpoint.label} exited {result.returncode}: "
-                        f"{result.stderr[-2000:]}"
-                    )
-            finally:
-                if reserved:
-                    ledger.release(reserved)
-                gpu_slots.put(gpu_idx)
+            env = os.environ.copy()
+            env["CUDA_VISIBLE_DEVICES"] = str(gpu_idx)
+            log_path = checkpoint_output_dir(study, checkpoint.label) / "generation.log"
+            cmd = generation_command(checkpoint, study, training, prompts_path, dry_run=dry_run)
 
-        return run_fn
+            logger.info("checkpoint %s generating on GPU slot %d", checkpoint.label, gpu_idx)
+            start = time.monotonic()
+            returncode = run_subprocess_streaming(cmd, log_path, env, f"generate {checkpoint.label}")
+            elapsed_hours = (time.monotonic() - start) / 3600.0
 
-    handles = {}
+            ledger.release(reserved)
+            reserved = 0.0
+            entry = ledger.record(checkpoint.label, elapsed_hours, runtime.pricing.usd_per_gpu_hour)
+            logger.info(
+                "checkpoint %s finished in %.3fh, cost $%.4f (cumulative $%.2f / cap $%.2f)",
+                checkpoint.label, elapsed_hours, entry.cost_usd, entry.cumulative_cost_usd, ledger.cap_usd,
+            )
+            if ledger.is_over_budget() and ledger.hard_stop:
+                aborted.set()
+                logger.warning(
+                    "budget cap reached after checkpoint %s — no further checkpoints will start",
+                    checkpoint.label,
+                )
+
+            if returncode != 0:
+                report.failed[checkpoint.label] = f"generation exited {returncode}, see {log_path}"
+            else:
+                report.completed.append(checkpoint.label)
+        finally:
+            if reserved:
+                ledger.release(reserved)
+            gpu_slots.put(gpu_idx)
+
+    pending = []
     for checkpoint in checkpoints:
         if resume and is_checkpoint_generated(study, checkpoint, expected_rows):
             logger.info("checkpoint %s already generated, skipping", checkpoint.label)
             report.skipped_already_done.append(checkpoint.label)
             continue
-        if aborted.is_set():
-            report.skipped_budget.append(checkpoint.label)
-            continue
-        handles[checkpoint.label] = provider.submit_job(checkpoint.label, make_run_fn(checkpoint))
+        pending.append(checkpoint)
 
-    for label, handle in handles.items():
-        status = provider.wait(handle)
-        if status == JobStatus.SUCCEEDED:
-            report.completed.append(label)
-        elif status == JobStatus.FAILED:
-            err = provider.get_error(handle)
-            if isinstance(err, BudgetExceededError):
-                report.skipped_budget.append(label)
-            else:
-                report.failed[label] = str(err) if err else "unknown error"
-        elif status == JobStatus.CANCELLED:
-            report.skipped_budget.append(label)
+    if runtime.execution.parallel_cells == 1:
+        for checkpoint in pending:
+            run_one(checkpoint)
+    else:
+        from concurrent.futures import ThreadPoolExecutor
+
+        with ThreadPoolExecutor(max_workers=runtime.execution.parallel_cells) as pool:
+            list(pool.map(run_one, pending))
 
     report.total_cost_usd = ledger.spent()
     report.aborted_on_budget = aborted.is_set()

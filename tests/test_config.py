@@ -7,8 +7,8 @@ from digital_ghost.config import (
     StudyConfig,
     load_captioning_config,
     load_eval_prompts_source,
-    load_provider_config,
     load_rating_app_config,
+    load_runtime_config,
     load_study_config,
     load_training_config,
 )
@@ -26,8 +26,9 @@ def test_real_configs_load_and_cross_reference():
     captioning = load_captioning_config(study)
     assert len(captioning.templates) >= 1
 
-    provider = load_provider_config(study)
-    assert provider.api_key_env
+    runtime = load_runtime_config(study)
+    assert runtime.pricing.usd_per_gpu_hour > 0
+    assert runtime.execution.parallel_cells >= 1
 
     rating = load_rating_app_config(study)
     assert set(rating.rating_options) == {"A", "B", "BOTH", "NEITHER"}
@@ -74,9 +75,12 @@ def test_arms_must_be_exactly_the_three_named_arms():
             seeds_per_cell=1,
             training_config="training.yaml",
             captioning_config="captioning.yaml",
-            provider_config="provider.yaml",
+            runtime_config="runtime.yaml",
             rating_app_config="rating_app.yaml",
-            eval={"prompts_source": "a", "prompts_file": "b", "seeds_per_prompt": 1, "tiers": {"near": 1, "mid": 1, "far": 1}},
+            eval={
+                "prompts_source": "a", "prompts_file": "b", "seeds_per_prompt": 1,
+                "tiers": {"near": 1, "mid": 1, "far": 1},
+            },
             budget={"cap_usd": 10},
             paths={
                 "manifest_dir": "a", "captions_dir": "b", "outputs_dir": "c",

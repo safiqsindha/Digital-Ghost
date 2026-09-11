@@ -17,8 +17,9 @@ dependencies = [
     "uvicorn[standard]>=0.29",
     "sqlmodel>=0.0.16",
     "python-multipart>=0.0.9",
-    "diffusers>=0.27",
+    "diffusers==0.40.0",  # pinned: vendor/ ships this version's trainer
     "transformers>=4.39",
+    "datasets>=2.19",  # the vendored trainer reads per-image captions via load_dataset
     "peft>=0.10",
     "accelerate>=0.28",
     "torch>=2.2",
@@ -31,6 +32,7 @@ dev = [
     "pytest>=8.0",
     "pytest-cov>=5.0",
     "ruff>=0.4",
+    "pytest-timeout>=2.3",  # a wedged subprocess must fail loudly, not hang CI
 ]
 
 [project.scripts]
@@ -42,6 +44,21 @@ build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
 include = ["digital_ghost*"]
+
+[tool.ruff]
+line-length = 120
+# vendor/ is upstream diffusers plus one reviewable patch. Reformatting it
+# would break the provenance check in tests/test_vendored_trainer.py, which
+# reconstructs the file from the recorded upstream hash plus that patch.
+extend-exclude = ["vendor"]
+
+[tool.ruff.lint]
+# A deliberately narrow baseline: pyflakes, pycodestyle and import ordering.
+# Wider rule sets flag things this pipeline does on purpose — the bare
+# `except Exception` that keeps one bad cell from ending a 45-cell sweep, and
+# the swallowed notifier failures that keep a push notification from killing
+# a 27-hour run.
+select = ["E", "F", "W", "I"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

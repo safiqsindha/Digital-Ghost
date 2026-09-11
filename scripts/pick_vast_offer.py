@@ -254,7 +254,7 @@ def print_report(rows: list[dict], work: dict, disk_gb: int, top: int) -> None:
     print(f"    --disk {disk_gb} --ssh --direct")
     if warning:
         print(f"  WARNING: {warning}")
-    print(f"\nThen put the accepted price into configs/provider.yaml:")
+    print("\nThen put the accepted price into configs/provider.yaml:")
     print(f"  pricing_usd_per_gpu_hour: {pick['dph']:.3f}")
     print("\nPass --gpu \"RTX 4090\" (or any model above) to get this command for that card.")
 

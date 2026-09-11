@@ -72,9 +72,36 @@ def image_path(output_dir: Path, prompt_id: str, gen_seed: int) -> Path:
     return output_dir / prompt_id / f"{gen_seed}.png"
 
 
-def run_dry_run(args: argparse.Namespace) -> None:
+DRY_RUN_IMAGE_PX = 256
+
+
+def _placeholder_image(gen_seed: int, size: int = DRY_RUN_IMAGE_PX):
+    """A plausible stand-in: varied per seed, textured, mid-luminance.
+
+    Dry-run images have to clear the same sanity thresholds as real
+    generations — file size, pixel variance, not-all-identical. A flat 8x8
+    swatch would trip those every time, which would leave the dry run
+    asserting against its own placeholder rather than against the pipeline.
+    """
+    import random
+
     from PIL import Image
 
+    rng = random.Random(gen_seed)
+    img = Image.new("RGB", (size, size))
+    px = img.load()
+    base = (rng.randint(60, 180), rng.randint(60, 180), rng.randint(60, 180))
+    for y in range(size):
+        for x in range(size):
+            px[x, y] = (
+                (base[0] + x + rng.randint(0, 12)) % 256,
+                (base[1] + y) % 256,
+                (base[2] + ((x + y) // 2)) % 256,
+            )
+    return img
+
+
+def run_dry_run(args: argparse.Namespace) -> None:
     out_dir = Path(args.output_dir)
     rows = load_prompt_rows(args.eval_prompts)
     manifest_path = out_dir / "manifest.jsonl"
@@ -84,7 +111,7 @@ def run_dry_run(args: argparse.Namespace) -> None:
         for row in rows:
             img_path = image_path(out_dir, row["prompt_id"], row["gen_seed"])
             img_path.parent.mkdir(parents=True, exist_ok=True)
-            Image.new("RGB", (8, 8), color=(row["gen_seed"] % 256, 0, 0)).save(img_path)
+            _placeholder_image(row["gen_seed"]).save(img_path)
             manifest.write(json.dumps(_record(args, row, img_path)) + "\n")
 
 

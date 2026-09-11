@@ -1,11 +1,10 @@
 """One sweep cell: (arm, dose, seed_index) -> a LoRA training run.
 
 Deliberately has no torch/diffusers import at module scope. Building a cell
-spec, checking completion, and constructing the training subprocess command
-are pure-Python and unit-testable without a GPU or the training stack
-installed; the actual training happens in a separate OS process (see
-`train_lora_sdxl.py`), one per GPU, which is what lets the orchestrator
-parallelize cleanly across N GPUs via CUDA_VISIBLE_DEVICES.
+spec, materializing its dataset, checking completion, and constructing the
+training subprocess command are pure-Python and unit-testable without a GPU
+or the training stack installed; the actual training happens in a separate OS
+process running the vendored trainer (see vendor/).
 """
 
 from __future__ import annotations
@@ -13,17 +12,30 @@ from __future__ import annotations
 import json
 import logging
 import os
+import shutil
 import sys
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
 from digital_ghost.caption.generate import load_captions
-from digital_ghost.config import StudyConfig, TrainingConfig
+from digital_ghost.config import REPO_ROOT, StudyConfig, TrainingConfig
 from digital_ghost.ingest.manifest import load_manifest
 from digital_ghost.sampling.subsample import subsample_ids
 
 logger = logging.getLogger(__name__)
+
+VENDORED_TRAINER = REPO_ROOT / "vendor" / "train_dreambooth_lora_sdxl.py"
+
+# The vendored trainer saves under this name and offers no way to change it.
+CHECKPOINT_NAME = "pytorch_lora_weights.safetensors"
+
+# `--instance_prompt` is required by the DreamBooth-shaped CLI even though
+# per-image captions from `--caption_column` take precedence and this value
+# never reaches the model. Captions are the variable this study holds constant
+# across arms, so the placeholder is deliberately conspicuous: if it ever shows
+# up in a trained result, something is very wrong.
+UNUSED_INSTANCE_PROMPT = "UNUSED_CAPTIONS_COME_FROM_DATASET"
 
 
 def cell_id(arm: str, dose: int, seed_index: int) -> str:
@@ -44,15 +56,23 @@ class CellSpec:
 
     @property
     def checkpoint_path(self) -> Path:
-        return Path(self.output_dir) / "lora_weights.safetensors"
+        return Path(self.output_dir) / CHECKPOINT_NAME
 
     @property
     def metadata_path(self) -> Path:
         return Path(self.output_dir) / "run_metadata.json"
 
     @property
-    def dataset_manifest_path(self) -> Path:
-        return Path(self.output_dir) / "dataset.jsonl"
+    def dataset_dir(self) -> Path:
+        return Path(self.output_dir) / "dataset"
+
+    @property
+    def log_path(self) -> Path:
+        return Path(self.output_dir) / "cell.log"
+
+    @property
+    def validation_dir(self) -> Path:
+        return Path(self.output_dir) / "validation_samples"
 
 
 def build_cell_spec(study: StudyConfig, arm: str, dose: int, seed_index: int) -> CellSpec:
@@ -86,12 +106,38 @@ def build_cell_spec(study: StudyConfig, arm: str, dose: int, seed_index: int) ->
     )
 
 
-def write_dataset_manifest(cell: CellSpec) -> Path:
-    Path(cell.output_dir).mkdir(parents=True, exist_ok=True)
-    with open(cell.dataset_manifest_path, "w") as f:
-        for img_id, path, caption in zip(cell.image_ids, cell.image_paths, cell.captions):
-            f.write(json.dumps({"id": img_id, "image_path": path, "caption": caption}) + "\n")
-    return cell.dataset_manifest_path
+def materialize_dataset(cell: CellSpec) -> Path:
+    """Lay the cell's images out as a HuggingFace `imagefolder` dataset.
+
+    The vendored trainer only accepts per-image captions through
+    `--dataset_name` + `--caption_column`, which means a directory of image
+    files plus a metadata.jsonl keyed on `file_name`.
+
+    Images are symlinked rather than copied: at 45 cells x up to 200 images
+    the copies would be gigabytes of duplication of files that already exist
+    under data/raw/. Falls back to copying where symlinks aren't available.
+    """
+    dataset_dir = cell.dataset_dir
+    if dataset_dir.exists():
+        shutil.rmtree(dataset_dir)
+    dataset_dir.mkdir(parents=True, exist_ok=True)
+
+    rows = []
+    for image_id, src_path, caption in zip(cell.image_ids, cell.image_paths, cell.captions):
+        src = Path(src_path)
+        # Flatten "arm/name.jpg" into a unique filename inside the dataset dir.
+        dest_name = image_id.replace("/", "__")
+        dest = dataset_dir / dest_name
+        try:
+            dest.symlink_to(src.resolve())
+        except OSError:
+            shutil.copy2(src, dest)
+        rows.append({"file_name": dest_name, "text": caption})
+
+    with open(dataset_dir / "metadata.jsonl", "w") as f:
+        for row in rows:
+            f.write(json.dumps(row) + "\n")
+    return dataset_dir
 
 
 def read_status(cell: CellSpec) -> dict | None:
@@ -133,43 +179,76 @@ def write_status(cell: CellSpec, status: str, **extra) -> None:
     os.replace(tmp, cell.metadata_path)
 
 
+def invalidate(cell: CellSpec) -> bool:
+    """Mark a completed cell as needing to be redone.
+
+    The smoke cell writes into the real run directory so it counts as one of
+    the sweep's cells rather than being paid for twice — which means a smoke
+    cell you inspect and dislike has to be explicitly thrown away, or the
+    sweep will happily resume past it.
+    """
+    if not cell.metadata_path.exists():
+        return False
+    write_status(cell, "invalidated", invalidated_at=datetime.now(timezone.utc).isoformat())
+    if cell.checkpoint_path.exists():
+        cell.checkpoint_path.unlink()
+    return True
+
+
 def training_command(
     cell: CellSpec,
     study: StudyConfig,
     training: TrainingConfig,
     dry_run: bool = False,
 ) -> list[str]:
-    """Argv for the standalone single-GPU training subprocess."""
-    dataset_path = write_dataset_manifest(cell)
+    """Argv for the training subprocess.
+
+    `dry_run` swaps in a placeholder trainer that needs no GPU and no model
+    download, so the whole orchestration path — dataset layout, subprocess
+    handling, logging, sanity assertions, cost accounting — is exercised
+    before anything is rented.
+    """
+    dataset_dir = materialize_dataset(cell)
+
+    if dry_run:
+        return [
+            sys.executable,
+            "-m",
+            "digital_ghost.training.placeholder_trainer",
+            "--dataset-dir", str(dataset_dir),
+            "--output-dir", cell.output_dir,
+            "--max-train-steps", str(study.dry_run.max_train_steps),
+            "--num-validation-images", str(training.validation.num_images),
+            "--seed", str(training.seed),
+        ]
+
+    max_steps = training.max_train_steps
     cmd = [
         sys.executable,
-        "-m",
-        "digital_ghost.training.train_lora_sdxl",
-        "--dataset", str(dataset_path),
-        "--output-dir", cell.output_dir,
-        "--base-model", training.base_model,
+        str(VENDORED_TRAINER),
+        "--pretrained_model_name_or_path", training.base_model,
+        "--dataset_name", str(dataset_dir),
+        "--caption_column", "text",
+        "--instance_prompt", UNUSED_INSTANCE_PROMPT,
+        "--output_dir", cell.output_dir,
         "--resolution", str(training.resolution),
-        "--batch-size", str(training.batch_size),
-        "--gradient-accumulation-steps", str(training.gradient_accumulation_steps),
-        "--max-train-steps", str(study.dry_run.max_train_steps if dry_run else training.max_train_steps),
-        "--lr", str(training.optimizer.lr),
-        "--lr-scheduler", training.optimizer.lr_scheduler,
-        "--lr-warmup-steps", str(training.optimizer.lr_warmup_steps),
-        "--weight-decay", str(training.optimizer.weight_decay),
-        "--lora-rank", str(training.lora.rank),
-        "--lora-alpha", str(training.lora.alpha),
-        "--lora-dropout", str(training.lora.dropout),
-        "--lora-target-modules", ",".join(training.lora.target_modules),
-        "--mixed-precision", training.mixed_precision,
+        "--train_batch_size", str(training.batch_size),
+        "--gradient_accumulation_steps", str(training.gradient_accumulation_steps),
+        "--max_train_steps", str(max_steps),
+        "--learning_rate", str(training.optimizer.lr),
+        "--lr_scheduler", training.optimizer.lr_scheduler,
+        "--lr_warmup_steps", str(training.optimizer.lr_warmup_steps),
+        "--adam_weight_decay", str(training.optimizer.weight_decay),
+        "--rank", str(training.lora.rank),
+        "--mixed_precision", training.mixed_precision,
         "--seed", str(training.seed),
-        "--data-seed", str(cell.data_seed),
-        "--checkpointing-steps", str(training.checkpointing_steps),
-        "--caption-dropout-rate", str(training.caption_dropout_rate),
+        "--checkpointing_steps", str(training.checkpointing_steps),
+        "--validation_prompt", training.validation.prompt,
+        "--num_validation_images", str(training.validation.num_images),
+        "--validation_epochs", str(training.validation_epochs(len(cell.image_ids))),
     ]
     if training.gradient_checkpointing:
-        cmd.append("--gradient-checkpointing")
-    if dry_run:
-        cmd.append("--dry-run")
+        cmd.append("--gradient_checkpointing")
     return cmd
 
 

@@ -66,7 +66,6 @@ class TestAnalysisDataIntegrity:
         """An unmapped choice became NaN, which the likelihood routed down the
         tie branch — silently biasing the tie parameter instead of erroring.
         """
-        import pandas as pd
 
         from digital_ghost.analysis.data import load_ratings
         from digital_ghost.config import load_rating_app_config

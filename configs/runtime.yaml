@@ -1,0 +1,61 @@
+# How the sweep executes on the box you rented.
+#
+# Replaces the old provider.yaml. With a single rented machine there is no
+# remote job API to talk to — cells are plain local subprocesses — so what
+# remains worth configuring is concurrency, price, and monitoring.
+
+execution:
+  # Serial by default. Cells are compared against each other, so running one
+  # at a time on one GPU is both the simplest thing to reason about and the
+  # easiest to keep hardware-identical. Raise this only if you have several
+  # GPUs in the same box; it does not spread work across machines.
+  parallel_cells: 1
+
+  # Best guess at one cell's GPU time. Used to reserve budget before a cell
+  # launches, so concurrent workers can't each see "nothing spent yet" and
+  # collectively blow past the cap. Bias high — the ledger replaces this with
+  # measured actuals after the first cell finishes. Set it properly from the
+  # smoke cell.
+  estimated_gpu_hours_per_cell: 0.5
+
+pricing:
+  # The price you actually accepted on the marketplace. Spend tracking is only
+  # as honest as this number. `python scripts/pick_vast_offer.py` prints it.
+  usd_per_gpu_hour: 0.40
+  gpu_model: "RTX 4090"
+
+hardware:
+  # All cells must run on the same GPU and library stack. Mixed hardware puts
+  # a confound inside the comparison the whole study rests on, so the sweep
+  # refuses to continue if the fingerprint changes mid-run. Override for a
+  # single run with `--allow-hardware-change`, which records the change in
+  # every affected cell's metadata rather than hiding it.
+  enforce_consistency: true
+
+ticker:
+  enabled: true
+  refresh_seconds: 10
+
+sanity:
+  # Per-cell assertions on generated output. A cell that "succeeds" while
+  # writing black frames or 150 identical images would flow into the rating
+  # study and corrupt the result while looking fine.
+  min_image_bytes: 10000
+  min_pixel_std: 2.0          # a collapsed LoRA renders flat frames
+  max_identical_fraction: 0.9
+  min_mean_luminance: 2.0     # catches all-black
+  max_mean_luminance: 253.0   # catches blown-out white
+  min_checkpoint_bytes: 1000
+
+notifications:
+  # none | ntfy | discord
+  backend: none
+  # The topic/webhook is read ONLY from these environment variables, never
+  # from this file — it is a secret and this file is committed.
+  #   export DIGITAL_GHOST_NTFY_TOPIC=your-topic-name
+  #   export DIGITAL_GHOST_DISCORD_WEBHOOK=https://discord.com/api/webhooks/...
+  ntfy_topic_env: DIGITAL_GHOST_NTFY_TOPIC
+  discord_webhook_env: DIGITAL_GHOST_DISCORD_WEBHOOK
+  notify_on:
+    - failure
+    - completion

@@ -21,7 +21,6 @@ import json
 import random
 import uuid
 from dataclasses import dataclass
-from pathlib import Path
 
 from digital_ghost.config import StudyConfig
 from digital_ghost.generation.generate_grid import BASELINE_LABEL, all_checkpoints, checkpoint_manifest_path

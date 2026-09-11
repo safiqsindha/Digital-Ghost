@@ -1,0 +1,60 @@
+name: CI
+
+# A regression here costs GPU money rather than a red build: the sweep spends
+# real money unattended for a day, and the things most worth protecting —
+# deterministic seeding, the budget cap, resume — fail silently rather than
+# loudly. So the suite runs on every push and PR.
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # CPU wheels only. The full CUDA build is several hundred MB the runner has
+  # no GPU to use, and every test here is written to run on CPU.
+  PIP_EXTRA_INDEX_URL: https://download.pytorch.org/whl/cpu
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: pip install ruff
+      # vendor/ is excluded in pyproject.toml: it is upstream diffusers plus
+      # one reviewable patch, and reformatting it would break its provenance.
+      - run: ruff check .
+
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: pyproject.toml
+      - name: Install
+        run: pip install -e ".[dev]"
+
+      - name: Fast suite
+        # No network, no model download. This is the gate.
+        run: pytest -m "not slow" -q --timeout=300 --timeout-method=thread --durations=15
+
+      - name: Real training path (tiny stand-in model)
+        # Drives the real diffusers/peft training loop and the real SDXL
+        # generation pipeline on CPU against a few-MB stand-in for SDXL.
+        # These catch the failure modes that would otherwise make every arm
+        # look identical to baseline: gradients never reaching the LoRA
+        # weights, a checkpoint that will not round-trip into generation, a
+        # seed that does not reproduce. They self-skip if the model cannot be
+        # fetched, so a Hub outage cannot turn the build red on its own.
+        run: pytest -m slow -q --timeout=900 --timeout-method=thread --durations=10

@@ -352,6 +352,34 @@ class ExecutionConfig(BaseModel):
     # "nothing spent yet" and collectively blowing past the cap. Overestimating
     # is safe; the ledger switches to observed actuals after the first cell.
     estimated_gpu_hours_per_cell: float = Field(gt=0, default=0.5)
+    # Deadlines for the two subprocesses a cell runs. Without them a wedged
+    # child stalls the whole sweep for as long as the box stays up, billing
+    # the whole time, and the per-cell sanity checks cannot help because they
+    # only run once the subprocess returns. Defaults are deliberately loose
+    # placeholders — tighten both to roughly 3x what the smoke cell actually
+    # takes, or a hang costs most of a day before it trips.
+    training_timeout_hours: float = Field(gt=0, default=6.0)
+    generation_timeout_hours: float = Field(gt=0, default=2.0)
+    # Grace period between SIGTERM and SIGKILL when a deadline is hit.
+    kill_grace_seconds: float = Field(gt=0, default=30.0)
+
+    @model_validator(mode="after")
+    def _deadlines_exceed_the_estimate(self) -> "ExecutionConfig":
+        """A deadline below the expected runtime would kill every healthy cell.
+
+        Cheap to typo (hours vs minutes) and expensive to discover: the sweep
+        would run to completion, report 45 failures, and bill for all of them.
+        """
+        for name, hours in (
+            ("training_timeout_hours", self.training_timeout_hours),
+            ("generation_timeout_hours", self.generation_timeout_hours),
+        ):
+            if hours <= self.estimated_gpu_hours_per_cell:
+                raise ValueError(
+                    f"{name}={hours}h is below estimated_gpu_hours_per_cell="
+                    f"{self.estimated_gpu_hours_per_cell}h — every cell would be killed mid-run"
+                )
+        return self
 
 
 class PricingConfig(BaseModel):

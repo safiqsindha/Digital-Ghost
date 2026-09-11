@@ -38,7 +38,7 @@ from digital_ghost.generation.generate_grid import (
 )
 from digital_ghost.hardware import HardwareChangedError, capture, check_consistency, load_reference, save_reference
 from digital_ghost.notify import get_notifier, notify_cell_failure, notify_sweep_complete
-from digital_ghost.proc import run_subprocess_streaming
+from digital_ghost.proc import SubprocessTimeout, run_subprocess_streaming
 from digital_ghost.sampling.subsample import cell_grid
 from digital_ghost.training.cell import (
     build_cell_spec,
@@ -190,9 +190,14 @@ def _generate_for_checkpoint(
     log_path: Path,
     env: dict,
     dry_run: bool,
+    timeout_s: float | None = None,
+    kill_grace_s: float = 30.0,
 ) -> int:
     cmd = generation_command(checkpoint, study, training, prompts_path, dry_run=dry_run)
-    return run_subprocess_streaming(cmd, log_path, env, f"generate {checkpoint.label}")
+    return run_subprocess_streaming(
+        cmd, log_path, env, f"generate {checkpoint.label}",
+        timeout_s=timeout_s, kill_grace_s=kill_grace_s,
+    )
 
 
 def _generated_image_paths(study: StudyConfig, label: str) -> list[Path]:
@@ -342,12 +347,18 @@ def run_sweep(
 
             failures: list[str] = []
 
-            rc = run_subprocess_streaming(
-                training_command(cell, study, training, dry_run=dry_run),
-                cell.log_path, env, f"train {cid}",
-            )
-            if rc != 0:
-                failures.append(f"training subprocess exited {rc}")
+            try:
+                rc = run_subprocess_streaming(
+                    training_command(cell, study, training, dry_run=dry_run),
+                    cell.log_path, env, f"train {cid}",
+                    timeout_s=runtime.execution.training_timeout_hours * 3600,
+                    kill_grace_s=runtime.execution.kill_grace_seconds,
+                )
+                if rc != 0:
+                    failures.append(f"training subprocess exited {rc}")
+            except SubprocessTimeout as e:
+                # One wedged cell is a failed cell, not a failed sweep.
+                failures.append(f"training timed out after {e.elapsed_s / 3600:.2f}h")
 
             if not failures:
                 ckpt_report = check_checkpoint(
@@ -358,11 +369,16 @@ def run_sweep(
 
             if not failures:
                 checkpoint = CheckpointSpec(cid, str(cell.checkpoint_path), arm, dose, seed_index)
-                rc = _generate_for_checkpoint(
-                    study, training, checkpoint, prompts_path, cell.log_path, env, dry_run
-                )
-                if rc != 0:
-                    failures.append(f"generation subprocess exited {rc}")
+                try:
+                    rc = _generate_for_checkpoint(
+                        study, training, checkpoint, prompts_path, cell.log_path, env, dry_run,
+                        timeout_s=runtime.execution.generation_timeout_hours * 3600,
+                        kill_grace_s=runtime.execution.kill_grace_seconds,
+                    )
+                    if rc != 0:
+                        failures.append(f"generation subprocess exited {rc}")
+                except SubprocessTimeout as e:
+                    failures.append(f"generation timed out after {e.elapsed_s / 3600:.2f}h")
 
             if not failures:
                 images = _generated_image_paths(study, cid)

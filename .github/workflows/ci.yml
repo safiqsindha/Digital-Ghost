@@ -21,6 +21,7 @@ env:
 jobs:
   lint:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -33,6 +34,7 @@ jobs:
 
   test:
     runs-on: ubuntu-latest
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -45,7 +47,7 @@ jobs:
 
       - name: Fast suite
         # No network, no model download. This is the gate.
-        run: pytest -m "not slow" -q
+        run: pytest -m "not slow" -q --timeout=300 --timeout-method=thread --durations=15
 
       - name: Real training path (tiny stand-in model)
         # Drives the real diffusers/peft training loop and the real SDXL
@@ -55,4 +57,4 @@ jobs:
         # weights, a checkpoint that will not round-trip into generation, a
         # seed that does not reproduce. They self-skip if the model cannot be
         # fetched, so a Hub outage cannot turn the build red on its own.
-        run: pytest -m slow -q
+        run: pytest -m slow -q --timeout=900 --timeout-method=thread --durations=10

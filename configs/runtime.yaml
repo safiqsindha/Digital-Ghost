@@ -18,6 +18,19 @@ execution:
   # smoke cell.
   estimated_gpu_hours_per_cell: 0.5
 
+  # Deadlines for the two subprocesses each cell runs. A wedged child would
+  # otherwise stall the sweep for as long as the box stays up — no progress,
+  # no failure, no next cell, and the GPU billing the whole time. On a breach
+  # the process group is killed (the trainer forks accelerate workers that
+  # would otherwise survive holding VRAM), the cell is recorded failed, and
+  # the sweep moves on.
+  #
+  # These defaults are loose placeholders. Set both to roughly 3x what the
+  # smoke cell actually takes, or a hang costs most of a day before it trips.
+  training_timeout_hours: 6.0
+  generation_timeout_hours: 2.0
+  kill_grace_seconds: 30.0
+
 pricing:
   # The price you actually accepted on the marketplace. Spend tracking is only
   # as honest as this number. `python scripts/pick_vast_offer.py` prints it.

@@ -88,7 +88,7 @@ def write_mock_config(root: Path) -> Path:
         "analysis_dir": str(root / "outputs" / "analysis"),
     }
     # sub-configs are resolved relative to study.yaml, so copy them alongside
-    for fn in ("training.yaml", "captioning.yaml", "provider.yaml",
+    for fn in ("training.yaml", "captioning.yaml", "runtime.yaml",
                "eval_prompts_source.yaml", "rating_app.yaml"):
         shutil.copy(REPO / "configs" / fn, root / fn)
 

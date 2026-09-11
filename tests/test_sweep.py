@@ -173,6 +173,44 @@ class TestOneBadCellIsNotFatal:
         for triple in (("standard", 3, 1), ("control", 3, 1)):
             assert _metadata(prepared_study, triple)["status"] == "succeeded"
 
+    def test_a_wedged_cell_hits_its_deadline_and_the_sweep_walks_on(
+        self, prepared_study, training_cfg, runtime_cfg, monkeypatch
+    ):
+        """A hang is the one failure the sanity checks cannot see.
+
+        They only run once the subprocess returns, so without a deadline a
+        wedged trainer stalls the sweep for as long as the box stays up — no
+        progress, no failure, no next cell, and the GPU billing throughout.
+        The deadline has to turn that into an ordinary failed cell.
+        """
+        doomed = cell_id("meme", 3, 1)
+        real_training_command = sweep.training_command
+
+        def hangs_for_one_cell(cell: CellSpec, study, training, dry_run: bool = False) -> list[str]:
+            if cell.id == doomed:
+                return [sys.executable, "-c", "import time; time.sleep(300)"]
+            return real_training_command(cell, study, training, dry_run=dry_run)
+
+        monkeypatch.setattr(sweep, "training_command", hangs_for_one_cell)
+        # Deadlines are configured in hours. 25s is comfortably longer than a
+        # healthy dry-run cell (which still pays a torch import) and far
+        # shorter than the doomed cell's 300s sleep, so only the hang is cut.
+        runtime_cfg.execution.training_timeout_hours = 25 / 3600
+        runtime_cfg.execution.kill_grace_seconds = 3.0
+
+        report = run_sweep(
+            prepared_study, training_cfg, runtime_cfg,
+            dry_run=True, resume=True, grid_override=THREE_CELLS, include_baseline=False,
+        )
+
+        outcomes = _outcomes_by_id(report)
+        assert outcomes[doomed].status == "failed"
+        assert any("timed out" in f for f in outcomes[doomed].failures), outcomes[doomed].failures
+
+        survivors = [cell_id(*t) for t in THREE_CELLS if cell_id(*t) != doomed]
+        assert [outcomes[cid].status for cid in survivors] == ["succeeded", "succeeded"]
+        assert _metadata(prepared_study, ("meme", 3, 1))["status"] == "failed"
+
     def test_sanity_failure_marks_the_cell_failed_rather_than_succeeded(
         self, prepared_study, training_cfg, runtime_cfg, monkeypatch
     ):

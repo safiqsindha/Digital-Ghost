@@ -21,7 +21,7 @@ from pathlib import Path
 
 from digital_ghost.config import RuntimeConfig, StudyConfig, TrainingConfig
 from digital_ghost.generation.eval_prompts import eval_prompt_seeds, load_eval_prompts
-from digital_ghost.proc import run_subprocess_streaming
+from digital_ghost.proc import SubprocessTimeout, run_subprocess_streaming
 from digital_ghost.sampling.subsample import cell_grid
 from digital_ghost.training.cell import build_cell_spec
 from digital_ghost.training.cell import is_complete as cell_is_complete
@@ -224,7 +224,18 @@ def run_generation_grid(
 
             logger.info("checkpoint %s generating on GPU slot %d", checkpoint.label, gpu_idx)
             start = time.monotonic()
-            returncode = run_subprocess_streaming(cmd, log_path, env, f"generate {checkpoint.label}")
+            timed_out: str | None = None
+            try:
+                returncode = run_subprocess_streaming(
+                    cmd, log_path, env, f"generate {checkpoint.label}",
+                    timeout_s=runtime.execution.generation_timeout_hours * 3600,
+                    kill_grace_s=runtime.execution.kill_grace_seconds,
+                )
+            except SubprocessTimeout as e:
+                returncode = -1
+                timed_out = f"generation timed out after {e.elapsed_s / 3600:.2f}h, see {log_path}"
+            # Recorded either way: the GPU time up to the kill was really spent,
+            # and a ledger that quietly forgets it would understate the sweep.
             elapsed_hours = (time.monotonic() - start) / 3600.0
 
             ledger.release(reserved)
@@ -241,7 +252,9 @@ def run_generation_grid(
                     checkpoint.label,
                 )
 
-            if returncode != 0:
+            if timed_out:
+                report.failed[checkpoint.label] = timed_out
+            elif returncode != 0:
                 report.failed[checkpoint.label] = f"generation exited {returncode}, see {log_path}"
             else:
                 report.completed.append(checkpoint.label)

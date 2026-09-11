@@ -88,3 +88,22 @@ def test_arms_must_be_exactly_the_three_named_arms():
             },
             dry_run={"n_images": 1, "n_prompts": 1},
         )
+
+
+def test_deadline_below_the_expected_cell_runtime_is_rejected():
+    """An hours/minutes typo here is cheap to make and expensive to find.
+
+    A deadline shorter than a cell's expected runtime kills every healthy
+    cell: the sweep runs the full grid, reports 45 failures, and bills for
+    all of them. Better to refuse the config than to discover it at cell 45.
+    """
+    from digital_ghost.config import ExecutionConfig
+
+    with pytest.raises(ValidationError, match="training_timeout_hours"):
+        ExecutionConfig(estimated_gpu_hours_per_cell=0.5, training_timeout_hours=0.25)
+
+    with pytest.raises(ValidationError, match="generation_timeout_hours"):
+        ExecutionConfig(estimated_gpu_hours_per_cell=0.5, generation_timeout_hours=0.5)
+
+    ok = ExecutionConfig(estimated_gpu_hours_per_cell=0.5, training_timeout_hours=1.5)
+    assert ok.training_timeout_hours == 1.5

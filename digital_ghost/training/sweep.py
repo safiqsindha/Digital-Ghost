@@ -36,12 +36,11 @@ from digital_ghost.generation.generate_grid import (
     generation_command,
     write_flat_prompts,
 )
-from digital_ghost.proc import run_subprocess_streaming
 from digital_ghost.hardware import HardwareChangedError, capture, check_consistency, load_reference, save_reference
 from digital_ghost.notify import get_notifier, notify_cell_failure, notify_sweep_complete
+from digital_ghost.proc import run_subprocess_streaming
 from digital_ghost.sampling.subsample import cell_grid
 from digital_ghost.training.cell import (
-    CellSpec,
     build_cell_spec,
     cell_id,
     is_complete,

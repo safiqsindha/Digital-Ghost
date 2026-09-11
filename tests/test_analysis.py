@@ -4,14 +4,13 @@ import random
 
 import numpy as np
 import pytest
-from sqlmodel import Session
 
 from digital_ghost.analysis.rater_weights import compute_rater_weights
 from digital_ghost.analysis.run_analysis import run_full_analysis
 from digital_ghost.config import load_rating_app_config
 from digital_ghost.generation.eval_prompts import load_eval_prompts
 from digital_ghost.generation.generate_grid import all_checkpoints
-from digital_ghost.rating_app.backend.db import get_engine, get_session
+from digital_ghost.rating_app.backend.db import get_session
 from digital_ghost.rating_app.backend.models import Rater, Rating
 from digital_ghost.rating_app.backend.pairing import build_image_index, sample_pair
 
@@ -63,8 +62,8 @@ def test_run_full_analysis_produces_sane_dose_response(trained_and_generated_stu
     results = run_full_analysis(study)
     labels = {r.label for r in results}
     assert "overall" in labels
-    assert any(l.startswith("tier_") for l in labels)
-    assert any(l.startswith("exposure_") for l in labels)
+    assert any(label.startswith("tier_") for label in labels)
+    assert any(label.startswith("exposure_") for label in labels)
 
     overall = next(r for r in results if r.label == "overall")
     curve = overall.unweighted_curve

@@ -44,6 +44,21 @@ build-backend = "setuptools.build_meta"
 [tool.setuptools.packages.find]
 include = ["digital_ghost*"]
 
+[tool.ruff]
+line-length = 120
+# vendor/ is upstream diffusers plus one reviewable patch. Reformatting it
+# would break the provenance check in tests/test_vendored_trainer.py, which
+# reconstructs the file from the recorded upstream hash plus that patch.
+extend-exclude = ["vendor"]
+
+[tool.ruff.lint]
+# A deliberately narrow baseline: pyflakes, pycodestyle and import ordering.
+# Wider rule sets flag things this pipeline does on purpose — the bare
+# `except Exception` that keeps one bad cell from ending a 45-cell sweep, and
+# the swallowed notifier failures that keep a push notification from killing
+# a 27-hour run.
+select = ["E", "F", "W", "I"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 markers = [

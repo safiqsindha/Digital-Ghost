@@ -121,7 +121,10 @@ def main() -> int:
     import digital_ghost.config as C
     from digital_ghost.caption.generate import caption_all_arms
     from digital_ghost.generation.eval_prompts import (
-        EvalPromptsExistError, eval_prompt_seeds, init_eval_prompts, load_eval_prompts,
+        EvalPromptsExistError,
+        eval_prompt_seeds,
+        init_eval_prompts,
+        load_eval_prompts,
     )
     from digital_ghost.generation.generate_grid import all_checkpoints, checkpoint_output_dir
     from digital_ghost.ingest.manifest import ingest_all_arms

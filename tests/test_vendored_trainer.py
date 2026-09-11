@@ -8,10 +8,8 @@ the vendored file, the patch, or the recorded hash stop agreeing.
 
 from __future__ import annotations
 
-import hashlib
 import re
 import subprocess
-from pathlib import Path
 
 import pytest
 

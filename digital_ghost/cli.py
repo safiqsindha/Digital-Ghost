@@ -295,8 +295,8 @@ def invalidate_cell_cmd(
     images you inspected and didn't like.
     """
     _setup_logging()
-    from digital_ghost.training.cell import build_cell_spec, invalidate
     from digital_ghost.sampling.subsample import cell_grid
+    from digital_ghost.training.cell import build_cell_spec, invalidate
     from digital_ghost.training.cell import cell_id as make_id
 
     study = load_study_config(config)

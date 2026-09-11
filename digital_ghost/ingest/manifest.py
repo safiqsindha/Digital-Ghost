@@ -11,7 +11,7 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 
 from digital_ghost.config import StudyConfig
-from digital_ghost.ingest.provenance import ProvenanceError, ProvenanceRecord, validate_arm_provenance
+from digital_ghost.ingest.provenance import ProvenanceRecord, validate_arm_provenance
 
 logger = logging.getLogger(__name__)
 
